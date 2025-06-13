@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::no_std_io::Read;
 
 /// A buffered reader that allows pulling exact sized chunks from an underlying reader.
-pub struct BufferedReader<R: Read> {
+pub struct ExactReader<R: Read> {
   source: R,
   buffer: Vec<u8>,
   last_user_read: usize,
@@ -14,7 +14,7 @@ pub struct BufferedReader<R: Read> {
 }
 
 #[derive(Error, Debug)]
-pub enum ExactReadError<U> {
+pub enum ReadExactError<U> {
   #[error("Unexpected EOF while reading")]
   UnexpectedEof,
   #[error("Expected EOF, but got more data")]
@@ -25,7 +25,7 @@ pub enum ExactReadError<U> {
   Io(#[from] U),
 }
 
-impl<R: Read> BufferedReader<R> {
+impl<R: Read> ExactReader<R> {
   #[must_use]
   pub fn new(max_buffer_size: usize, source: R) -> Self {
     Self {
@@ -38,14 +38,14 @@ impl<R: Read> BufferedReader<R> {
   }
 
   /// Reads exactly `byte_count` bytes from the underlying reader.
-  pub fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ExactReadError<R::Error>> {
+  pub fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<R::Error>> {
     if byte_count > self.max_buffer_size {
-      return Err(ExactReadError::MemoryLimitExceeded);
+      return Err(ReadExactError::MemoryLimitExceeded);
     }
     if byte_count == 0 {
       let bytes_read = self.source.read(&mut [])?;
       if bytes_read != 0 {
-        return Err(ExactReadError::UnexpectedData);
+        return Err(ReadExactError::UnexpectedData);
       }
       return Ok(&[]);
     }
@@ -68,7 +68,7 @@ impl<R: Read> BufferedReader<R> {
       let bytes_read = self.source.read(&mut self.buffer[self.bytes_in_buffer..])?;
       if bytes_read == 0 {
         // If we read 0 bytes, it means the source is exhausted but the user requested more data.
-        return Err(ExactReadError::UnexpectedEof);
+        return Err(ReadExactError::UnexpectedEof);
       }
       self.bytes_in_buffer += bytes_read;
     }
@@ -87,10 +87,10 @@ mod tests {
   use super::*;
 
   #[test]
-  fn buffered_reader_reads_correctly() {
+  fn test_buffered_reader_reads_correctly() {
     let source_data = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     let mock_reader = SliceReader::new(&source_data);
-    let mut reader = BufferedReader::new(4, mock_reader);
+    let mut reader = ExactReader::new(4, mock_reader);
 
     // Read the first 3 bytes
     assert_eq!(reader.read_exact(3).unwrap(), &[0, 1, 2]);
@@ -104,22 +104,22 @@ mod tests {
     // Test MemoryLimitExceeded error
     assert!(matches!(
       reader.read_exact(5).unwrap_err(),
-      ExactReadError::MemoryLimitExceeded
+      ReadExactError::MemoryLimitExceeded
     ));
 
     // Test UnexpectedEof error
     assert!(matches!(
       reader.read_exact(1).unwrap_err(),
-      ExactReadError::UnexpectedEof
+      ReadExactError::UnexpectedEof
     ));
   }
 
   #[test]
-  fn buffered_reader_reads_correctly_bytewise() {
+  fn test_buffered_reader_reads_correctly_bytewise() {
     let source_data = b"Hello, world!";
     let buffer_reader = SliceReader::new(source_data);
     let bytewise_reader = BytewiseReader::new(buffer_reader);
-    let mut buffered_reader = BufferedReader::new(10, bytewise_reader);
+    let mut buffered_reader = ExactReader::new(10, bytewise_reader);
     // Read 5 bytes
     let bytes_read = buffered_reader.read_exact(5).unwrap();
     assert_eq!(bytes_read, b"Hello");

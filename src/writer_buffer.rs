@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
+use thiserror::Error;
 
-use crate::no_std_io::{IoError, Write};
+use crate::no_std_io::Write;
 
 /// A writer that writes data to an in-memory buffer with a maximum size limit.
 pub struct BufferWriter {
@@ -35,11 +36,20 @@ impl BufferWriter {
   }
 }
 
+#[derive(Error, Debug)]
+pub enum BufferWriterWriteError {
+  #[error("Memory limit exceeded for writer buffer")]
+  MemoryLimitExceeded,
+}
+
 impl Write for BufferWriter {
-  fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, IoError> {
+  type WriteError = BufferWriterWriteError;
+  type FlushError = core::convert::Infallible;
+
+  fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
     let available = self.max_buffer_size.saturating_sub(self.target.len());
     if available == 0 {
-      return Err(IoError::MemoryLimitExceeded);
+      return Err(Self::WriteError::MemoryLimitExceeded);
     }
 
     let n = core::cmp::min(input_buffer.len(), available);
@@ -47,7 +57,7 @@ impl Write for BufferWriter {
     Ok(n)
   }
 
-  fn flush(&mut self) -> Result<(), IoError> {
+  fn flush(&mut self) -> Result<(), Self::FlushError> {
     // No-op for in-memory buffer.
     Ok(())
   }
@@ -58,22 +68,26 @@ mod tests {
   use super::*;
 
   #[test]
-  fn buffer_writer_simple_with_limit_test() {
-    let mut writer = BufferWriter::new(10);
+  fn test_buffer_writer_respects_limit() {
+    let mut writer = BufferWriter::new(5);
+    let data = b"hello world";
 
-    // Write within limit
-    let data1 = b"hello";
-    writer.write(data1, false).expect("Write should succeed");
+    // Should write only up to the limit
+    let written = writer.write(data, false).unwrap();
+    assert_eq!(written, 5);
     assert_eq!(writer.as_slice(), b"hello");
 
-    // Write more within remaining space
-    let data2 = b"123";
-    writer.write(data2, false).expect("Write should succeed");
-    assert_eq!(writer.as_slice(), b"hello123");
+    // Further writes should return MemoryLimitExceeded
+    let err = writer.write(b"!", false).unwrap_err();
+    assert!(matches!(err, BufferWriterWriteError::MemoryLimitExceeded));
+  }
 
-    // Attempt to exceed limit
-    let data3 = b"abcd"; // would exceed 10 bytes
-    let result = writer.write(data3, false);
-    assert!(matches!(result, Err(IoError::MemoryLimitExceeded)));
+  #[test]
+  fn test_buffer_writer_to_vec_and_len() {
+    let data = b"abc";
+    let mut writer = BufferWriter::new(10);
+    writer.write(data, false).unwrap();
+    assert_eq!(writer.len(), 3);
+    assert_eq!(writer.to_vec(), data);
   }
 }

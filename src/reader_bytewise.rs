@@ -42,7 +42,7 @@ mod tests {
   use super::*;
 
   #[test]
-  fn bytewise_reader_reads_correctly() {
+  fn test_bytewise_reader_reads_correctly() {
     let data = b"Rust";
     let mut reader = BytewiseReader::new(SliceReader::new(data));
 

@@ -1,6 +1,6 @@
 use core::panic;
 
-use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 use miniz_oxide::{
   inflate::stream::{inflate, InflateState},
@@ -8,7 +8,7 @@ use miniz_oxide::{
 };
 use thiserror::Error;
 
-use crate::{dynamic_error::DynamicError, no_std_io::Read};
+use crate::no_std_io::Read;
 
 pub struct CompressedReader<R: Read> {
   source_reader: R,
@@ -102,10 +102,10 @@ impl<R: Read> Read for CompressedReader<R> {
 mod tests {
   use super::*;
   use crate::{
-    reader_buffered::BufferedReader, reader_bytewise::BytewiseReader, reader_slice::SliceReader,
+    reader_bytewise::BytewiseReader, reader_exact::ExactReader, reader_slice::SliceReader,
   };
 
-  fn compressed_reader_simple_read(use_zlib: bool) {
+  fn test_compressed_reader_simple_read(use_zlib: bool) {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";
     let compressed_data = if use_zlib {
       miniz_oxide::deflate::compress_to_vec_zlib(uncompressed_data, 6)
@@ -115,7 +115,7 @@ mod tests {
 
     let output_buffer = SliceReader::new(&compressed_data);
     let compressed_reader = CompressedReader::new(output_buffer, use_zlib, 4096);
-    let mut buffered_reader = BufferedReader::new(1024, compressed_reader);
+    let mut buffered_reader = ExactReader::new(1024, compressed_reader);
     let bytes_read = buffered_reader
       .read_exact(uncompressed_data.len())
       .expect("Failed to read");
@@ -123,23 +123,23 @@ mod tests {
   }
 
   #[test]
-  fn compressed_reader_reads_raw_correctly() {
-    compressed_reader_simple_read(false);
+  fn test_compressed_reader_reads_raw_correctly() {
+    test_compressed_reader_simple_read(false);
   }
 
   #[test]
-  fn compressed_reader_reads_zlib_correctly() {
-    compressed_reader_simple_read(true);
+  fn test_compressed_reader_reads_zlib_correctly() {
+    test_compressed_reader_simple_read(true);
   }
 
   #[test]
-  fn compressed_reader_reads_correctly_bytewise() {
+  fn test_compressed_reader_reads_correctly_bytewise() {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";
     let compressed_data = miniz_oxide::deflate::compress_to_vec(uncompressed_data, 6);
 
     let output_buffer = BytewiseReader::new(SliceReader::new(&compressed_data));
     let compressed_reader = CompressedReader::new(output_buffer, false, 4096);
-    let mut buffered_reader = BufferedReader::new(1024, compressed_reader);
+    let mut buffered_reader = ExactReader::new(1024, compressed_reader);
     let bytes_read = buffered_reader
       .read_exact(uncompressed_data.len())
       .unwrap_or_else(|e| panic!("Failed to read: {}", e));

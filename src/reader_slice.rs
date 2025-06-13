@@ -28,7 +28,7 @@ mod tests {
   use super::*;
 
   #[test]
-  fn slice_reader_reads_correctly() {
+  fn test_slice_reader_reads_correctly() {
     let data = b"abcdef";
     let mut reader = SliceReader::new(data);
 

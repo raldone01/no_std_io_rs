@@ -1,11 +1,12 @@
 #![no_std]
 extern crate alloc;
 
-mod reader_buffered;
 mod reader_bytewise;
 mod reader_compressed;
+mod reader_exact;
 mod reader_slice;
-/*mod writer_buffer;
+mod writer_buffer;
+/*
 mod writer_bytewise;
 mod writer_compressed;*/
 //mod gz_header;
