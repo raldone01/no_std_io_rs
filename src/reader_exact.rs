@@ -5,8 +5,8 @@ use thiserror::Error;
 use crate::no_std_io::Read;
 
 /// A buffered reader that allows pulling exact sized chunks from an underlying reader.
-pub struct ExactReader<R: Read> {
-  source: R,
+pub struct ExactReader<'a, R: Read> {
+  source: &'a mut R,
   buffer: Vec<u8>,
   last_user_read: usize,
   bytes_in_buffer: usize,
@@ -25,9 +25,9 @@ pub enum ReadExactError<U> {
   Io(#[from] U),
 }
 
-impl<R: Read> ExactReader<R> {
+impl<'a, R: Read> ExactReader<'a, R> {
   #[must_use]
-  pub fn new(max_buffer_size: usize, source: R) -> Self {
+  pub fn new(max_buffer_size: usize, source: &'a mut R) -> Self {
     Self {
       source,
       buffer: Vec::new(),
@@ -89,8 +89,8 @@ mod tests {
   #[test]
   fn test_buffered_reader_reads_correctly() {
     let source_data = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-    let mock_reader = SliceReader::new(&source_data);
-    let mut reader = ExactReader::new(4, mock_reader);
+    let mut slice_reader = SliceReader::new(&source_data);
+    let mut reader = ExactReader::new(4, &mut slice_reader);
 
     // Read the first 3 bytes
     assert_eq!(reader.read_exact(3).unwrap(), &[0, 1, 2]);
@@ -117,9 +117,9 @@ mod tests {
   #[test]
   fn test_buffered_reader_reads_correctly_bytewise() {
     let source_data = b"Hello, world!";
-    let buffer_reader = SliceReader::new(source_data);
-    let bytewise_reader = BytewiseReader::new(buffer_reader);
-    let mut buffered_reader = ExactReader::new(10, bytewise_reader);
+    let mut slice_reader = SliceReader::new(source_data);
+    let mut bytewise_reader = BytewiseReader::new(&mut slice_reader);
+    let mut buffered_reader = ExactReader::new(10, &mut bytewise_reader);
     // Read 5 bytes
     let bytes_read = buffered_reader.read_exact(5).unwrap();
     assert_eq!(bytes_read, b"Hello");

@@ -10,15 +10,15 @@ use thiserror::Error;
 
 use crate::no_std_io::Read;
 
-pub struct CompressedReader<R: Read> {
-  source_reader: R,
+pub struct CompressedReader<'a, R: Read> {
+  source_reader: &'a mut R,
   decompressor: InflateState,
   tmp_buffer: Vec<u8>,
 }
 
-impl<R: Read> CompressedReader<R> {
+impl<'a, R: Read> CompressedReader<'a, R> {
   #[must_use]
-  pub fn new(reader: R, zlib_wrapped: bool, tmp_buffer_size: usize) -> Self {
+  pub fn new(reader: &'a mut R, zlib_wrapped: bool, tmp_buffer_size: usize) -> Self {
     let data_format = if zlib_wrapped {
       DataFormat::Zlib
     } else {
@@ -47,7 +47,7 @@ pub enum CompressedReadError<U> {
   Io(#[from] U),
 }
 
-impl<R: Read> Read for CompressedReader<R> {
+impl<R: Read> Read for CompressedReader<'_, R> {
   type Error = CompressedReadError<R::Error>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::Error> {
@@ -113,9 +113,9 @@ mod tests {
       miniz_oxide::deflate::compress_to_vec(uncompressed_data, 6)
     };
 
-    let output_buffer = SliceReader::new(&compressed_data);
-    let compressed_reader = CompressedReader::new(output_buffer, use_zlib, 4096);
-    let mut buffered_reader = ExactReader::new(1024, compressed_reader);
+    let mut slice_reader = SliceReader::new(&compressed_data);
+    let mut compressed_reader = CompressedReader::new(&mut slice_reader, use_zlib, 4096);
+    let mut buffered_reader = ExactReader::new(1024, &mut compressed_reader);
     let bytes_read = buffered_reader
       .read_exact(uncompressed_data.len())
       .expect("Failed to read");
@@ -137,9 +137,10 @@ mod tests {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";
     let compressed_data = miniz_oxide::deflate::compress_to_vec(uncompressed_data, 6);
 
-    let output_buffer = BytewiseReader::new(SliceReader::new(&compressed_data));
-    let compressed_reader = CompressedReader::new(output_buffer, false, 4096);
-    let mut buffered_reader = ExactReader::new(1024, compressed_reader);
+    let mut slice_reader = SliceReader::new(&compressed_data);
+    let mut bytewise_reader = BytewiseReader::new(&mut slice_reader);
+    let mut compressed_reader = CompressedReader::new(&mut bytewise_reader, false, 4096);
+    let mut buffered_reader = ExactReader::new(1024, &mut compressed_reader);
     let bytes_read = buffered_reader
       .read_exact(uncompressed_data.len())
       .unwrap_or_else(|e| panic!("Failed to read: {}", e));

@@ -1,18 +1,18 @@
 use crate::no_std_io::Read;
 
 /// A reader that reads data byte by byte, useful for testing.
-pub struct BytewiseReader<R: Read> {
-  source_reader: R,
+pub struct BytewiseReader<'a, R: Read> {
+  source_reader: &'a mut R,
 }
 
-impl<R: Read> BytewiseReader<R> {
+impl<'a, R: Read> BytewiseReader<'a, R> {
   #[must_use]
-  pub fn new(source_reader: R) -> Self {
+  pub fn new(source_reader: &'a mut R) -> Self {
     Self { source_reader }
   }
 }
 
-impl<R: Read> Read for BytewiseReader<R> {
+impl<'a, R: Read> Read for BytewiseReader<'a, R> {
   type Error = R::Error;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::Error> {
@@ -44,7 +44,8 @@ mod tests {
   #[test]
   fn test_bytewise_reader_reads_correctly() {
     let data = b"Rust";
-    let mut reader = BytewiseReader::new(SliceReader::new(data));
+    let mut slice_reader = SliceReader::new(data);
+    let mut reader = BytewiseReader::new(&mut slice_reader);
 
     // Create a buffer that is larger than 1 to prove it only reads a single byte.
     let mut buf = [0u8; 5];

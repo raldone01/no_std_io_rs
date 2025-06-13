@@ -6,8 +6,8 @@ mod reader_compressed;
 mod reader_exact;
 mod reader_slice;
 mod writer_buffer;
-/*
 mod writer_bytewise;
+/*
 mod writer_compressed;*/
 //mod gz_header;
 mod no_std_io;
