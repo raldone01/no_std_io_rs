@@ -2,10 +2,10 @@ use alloc::vec::Vec;
 
 use crate::no_std_io::{IoError, Write};
 
+/// A writer that writes data to an in-memory buffer with a maximum size limit.
 pub struct BufferWriter {
   target: Vec<u8>,
   max_buffer_size: usize,
-  position: usize,
 }
 
 impl BufferWriter {
@@ -14,14 +14,13 @@ impl BufferWriter {
     Self {
       target: Vec::new(),
       max_buffer_size,
-      position: 0,
     }
   }
 
   /// Get a reference to the internal buffer.
   #[must_use]
   pub fn as_slice(&self) -> &[u8] {
-    &self.target[..self.position]
+    &self.target
   }
 
   /// Get the current internal buffer.
@@ -29,34 +28,23 @@ impl BufferWriter {
   pub fn to_vec(self) -> Vec<u8> {
     self.target
   }
+
+  #[must_use]
+  pub fn len(&self) -> usize {
+    self.target.len()
+  }
 }
 
 impl Write for BufferWriter {
-  fn write(&mut self, buf: &[u8], _sync_hint: bool) -> Result<(), IoError> {
-    // Calculate new length after writing
-    let new_len = self
-      .position
-      .checked_add(buf.len())
-      .ok_or(IoError::MemoryLimitExceeded)?;
-
-    // Check if new length exceeds max buffer size
-    if new_len > self.max_buffer_size {
+  fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, IoError> {
+    let available = self.max_buffer_size.saturating_sub(self.target.len());
+    if available == 0 {
       return Err(IoError::MemoryLimitExceeded);
     }
 
-    // Ensure the internal Vec has enough capacity
-    if self.target.len() < new_len {
-      let new_target_buffer_size = new_len.max(self.target.len() * 2).min(self.max_buffer_size);
-      self.target.resize(new_target_buffer_size, 0);
-    }
-
-    // Copy buf into target at current position
-    self.target[self.position..new_len].copy_from_slice(buf);
-
-    // Update position to reflect bytes written
-    self.position = new_len;
-
-    Ok(())
+    let n = core::cmp::min(input_buffer.len(), available);
+    self.target.extend_from_slice(&input_buffer[..n]);
+    Ok(n)
   }
 
   fn flush(&mut self) -> Result<(), IoError> {
@@ -70,7 +58,7 @@ mod tests {
   use super::*;
 
   #[test]
-  fn buffer_writer_writes_and_limits_buffer() {
+  fn buffer_writer_simple_with_limit_test() {
     let mut writer = BufferWriter::new(10);
 
     // Write within limit

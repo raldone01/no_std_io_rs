@@ -1,14 +1,28 @@
 use alloc::vec::Vec;
 
-use crate::no_std_io::{IoError, Read};
+use thiserror::Error;
 
-/// A buffered reader that allows pulling exact sized chunks from a reader.
+use crate::no_std_io::Read;
+
+/// A buffered reader that allows pulling exact sized chunks from an underlying reader.
 pub struct BufferedReader<R: Read> {
   source: R,
   buffer: Vec<u8>,
   last_user_read: usize,
   bytes_in_buffer: usize,
   max_buffer_size: usize,
+}
+
+#[derive(Error, Debug)]
+pub enum ExactReadError<U> {
+  #[error("Unexpected EOF while reading")]
+  UnexpectedEof,
+  #[error("Expected EOF, but got more data")]
+  UnexpectedData,
+  #[error("Memory limit exceeded for buffered read")]
+  MemoryLimitExceeded,
+  #[error("Underlying I/O error: {0:?}")]
+  Io(#[from] U),
 }
 
 impl<R: Read> BufferedReader<R> {
@@ -23,12 +37,16 @@ impl<R: Read> BufferedReader<R> {
     }
   }
 
-  /// Reads exactly `byte_count` bytes from the reader.
-  pub fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], IoError> {
+  /// Reads exactly `byte_count` bytes from the underlying reader.
+  pub fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ExactReadError<R::Error>> {
     if byte_count > self.max_buffer_size {
-      return Err(IoError::MemoryLimitExceeded);
+      return Err(ExactReadError::MemoryLimitExceeded);
     }
     if byte_count == 0 {
+      let bytes_read = self.source.read(&mut [])?;
+      if bytes_read != 0 {
+        return Err(ExactReadError::UnexpectedData);
+      }
       return Ok(&[]);
     }
 
@@ -49,8 +67,8 @@ impl<R: Read> BufferedReader<R> {
       // Read more data into the buffer.
       let bytes_read = self.source.read(&mut self.buffer[self.bytes_in_buffer..])?;
       if bytes_read == 0 {
-        // If we read 0 bytes, it means the source is exhausted.
-        return Err(IoError::UnexpectedEof);
+        // If we read 0 bytes, it means the source is exhausted but the user requested more data.
+        return Err(ExactReadError::UnexpectedEof);
       }
       self.bytes_in_buffer += bytes_read;
     }
@@ -64,14 +82,14 @@ impl<R: Read> BufferedReader<R> {
 
 #[cfg(test)]
 mod tests {
-  use crate::buffer_reader::BufferReader;
+  use crate::{reader_bytewise::BytewiseReader, reader_slice::SliceReader};
 
   use super::*;
 
   #[test]
-  fn test_simple_reads() {
+  fn buffered_reader_reads_correctly() {
     let source_data = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-    let mock_reader = BufferReader::new(&source_data);
+    let mock_reader = SliceReader::new(&source_data);
     let mut reader = BufferedReader::new(4, mock_reader);
 
     // Read the first 3 bytes
@@ -86,13 +104,30 @@ mod tests {
     // Test MemoryLimitExceeded error
     assert!(matches!(
       reader.read_exact(5).unwrap_err(),
-      IoError::MemoryLimitExceeded
+      ExactReadError::MemoryLimitExceeded
     ));
 
     // Test UnexpectedEof error
     assert!(matches!(
       reader.read_exact(1).unwrap_err(),
-      IoError::UnexpectedEof
+      ExactReadError::UnexpectedEof
     ));
+  }
+
+  #[test]
+  fn buffered_reader_reads_correctly_bytewise() {
+    let source_data = b"Hello, world!";
+    let buffer_reader = SliceReader::new(source_data);
+    let bytewise_reader = BytewiseReader::new(buffer_reader);
+    let mut buffered_reader = BufferedReader::new(10, bytewise_reader);
+    // Read 5 bytes
+    let bytes_read = buffered_reader.read_exact(5).unwrap();
+    assert_eq!(bytes_read, b"Hello");
+    // Read another 5 bytes
+    let bytes_read = buffered_reader.read_exact(5).unwrap();
+    assert_eq!(bytes_read, b", wor");
+    // Read the remaining bytes
+    let bytes_read = buffered_reader.read_exact(3).unwrap();
+    assert_eq!(bytes_read, b"ld!");
   }
 }

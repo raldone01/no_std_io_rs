@@ -10,6 +10,7 @@ impl GzHeader {
   /// Parse a GzHeader from a buffer slice.
   /// Returns `Some((header_length, GzHeader))` if successful, otherwise `None`.
   pub fn parse(buf: &[u8]) -> Option<(usize, GzHeader)> {
+    // TODO: rename buf -> input_buffer
     // Minimum gzip header length is 10 bytes
     if buf.len() < 10 {
       return None;
