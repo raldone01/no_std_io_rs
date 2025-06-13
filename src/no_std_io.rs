@@ -23,9 +23,7 @@ pub trait Read {
 /// Trait for writing bytes
 pub trait Write {
   /// Write the contents of `buf` to the underlying storage.
-  ///
-  /// Returns number of bytes written, or `Error::Io`.
-  fn write(&mut self, buf: &[u8]) -> Result<usize, IoError>;
+  fn write(&mut self, buf: &[u8], sync_hint: bool) -> Result<(), IoError>;
 
   /// Flush any buffered data to the underlying storage.
   /// Must be called at the end to ensure all data is written.

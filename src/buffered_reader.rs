@@ -61,3 +61,38 @@ impl<R: Read> BufferedReader<R> {
     Ok(result)
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use crate::buffer_reader::BufferReader;
+
+  use super::*;
+
+  #[test]
+  fn test_simple_reads() {
+    let source_data = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let mock_reader = BufferReader::new(&source_data);
+    let mut reader = BufferedReader::new(4, mock_reader);
+
+    // Read the first 3 bytes
+    assert_eq!(reader.read_exact(3).unwrap(), &[0, 1, 2]);
+
+    // Read the next 4 bytes. The buffer should handle the internal offset.
+    assert_eq!(reader.read_exact(4).unwrap(), &[3, 4, 5, 6]);
+
+    // The remaining data in the source should be copied and returned.
+    assert_eq!(reader.read_exact(3).unwrap(), &[7, 8, 9]);
+
+    // Test MemoryLimitExceeded error
+    assert!(matches!(
+      reader.read_exact(5).unwrap_err(),
+      IoError::MemoryLimitExceeded
+    ));
+
+    // Test UnexpectedEof error
+    assert!(matches!(
+      reader.read_exact(1).unwrap_err(),
+      IoError::UnexpectedEof
+    ));
+  }
+}

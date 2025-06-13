@@ -3,7 +3,11 @@ use core::fmt::Write;
 
 use miniz_oxide::MZError;
 
-use crate::{compressed_writer::CompressedWriter, tar_constants::ustar::*};
+use crate::{
+  compressed_writer::CompressedWriter,
+  no_std_io::{IoError, Write as _},
+  tar_constants::ustar::*,
+};
 
 /// Helper function to write an octal number into a fixed-size field in the TAR header.
 /// The field is zero-padded on the left and null-terminated.
@@ -90,8 +94,8 @@ impl TarBuilder {
   /// * `data` - The raw byte content of the file.
   ///
   /// # Errors
-  /// Returns `MZError` if compression fails.
-  pub fn add_file(&mut self, path: &str, data: &[u8]) -> Result<(), MZError> {
+  /// Returns `IoError` if compression fails.
+  pub fn add_file(&mut self, path: &str, data: &[u8]) -> Result<(), IoError> {
     // 1. Create the TAR header for this file.
     let header = create_tar_header(path, data.len() as u64);
 
@@ -115,11 +119,12 @@ impl TarBuilder {
 
   /// Finalizes the archive and returns the compressed bytes.
   /// This writes the mandatory end-of-archive marker (two zero blocks).
-  pub fn finish(mut self) -> Result<Vec<u8>, MZError> {
+  pub fn finish(mut self) -> Result<Vec<u8>, IoError> {
     // A TAR archive is terminated by two 512-byte zero blocks.
     self.compressed_writer.write(&ZERO_BLOCK, false)?;
     self.compressed_writer.write(&ZERO_BLOCK, false)?;
 
-    self.compressed_writer.finish()
+    self.compressed_writer.flush()?;
+    self.compressed_writer.get_compressed_data()
   }
 }

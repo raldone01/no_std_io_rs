@@ -23,10 +23,16 @@ impl BufferWriter {
   pub fn as_slice(&self) -> &[u8] {
     &self.target[..self.position]
   }
+
+  /// Get the current internal buffer.
+  #[must_use]
+  pub fn to_vec(self) -> Vec<u8> {
+    self.target
+  }
 }
 
 impl Write for BufferWriter {
-  fn write(&mut self, buf: &[u8]) -> Result<usize, IoError> {
+  fn write(&mut self, buf: &[u8], _sync_hint: bool) -> Result<(), IoError> {
     // Calculate new length after writing
     let new_len = self
       .position
@@ -40,7 +46,8 @@ impl Write for BufferWriter {
 
     // Ensure the internal Vec has enough capacity
     if self.target.len() < new_len {
-      self.target.resize(new_len, 0);
+      let new_target_buffer_size = new_len.max(self.target.len() * 2).min(self.max_buffer_size);
+      self.target.resize(new_target_buffer_size, 0);
     }
 
     // Copy buf into target at current position
@@ -49,7 +56,7 @@ impl Write for BufferWriter {
     // Update position to reflect bytes written
     self.position = new_len;
 
-    Ok(buf.len())
+    Ok(())
   }
 
   fn flush(&mut self) -> Result<(), IoError> {
@@ -68,17 +75,17 @@ mod tests {
 
     // Write within limit
     let data1 = b"hello";
-    assert_eq!(writer.write(data1).unwrap(), 5);
+    writer.write(data1, false).expect("Write should succeed");
     assert_eq!(writer.as_slice(), b"hello");
 
     // Write more within remaining space
     let data2 = b"123";
-    assert_eq!(writer.write(data2).unwrap(), 3);
+    writer.write(data2, false).expect("Write should succeed");
     assert_eq!(writer.as_slice(), b"hello123");
 
     // Attempt to exceed limit
     let data3 = b"abcd"; // would exceed 10 bytes
-    let result = writer.write(data3);
+    let result = writer.write(data3, false);
     assert!(matches!(result, Err(IoError::MemoryLimitExceeded)));
   }
 }
