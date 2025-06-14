@@ -13,6 +13,7 @@ Features of this crate:
 * `pax`
 * `gnu`
 * gen `ustar` tar
+* Add feature to opt in to time dependency.
 
 # TODO fever dreams:
 

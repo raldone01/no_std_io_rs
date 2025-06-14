@@ -99,3 +99,43 @@ pub enum TarTypeFlag {
   /// Long link name (GNU)
   LongLinkNameGnu = b'K',
 }
+
+pub struct TarHeaderRaw {
+  /// File name, null-terminated
+  pub name: [u8; 100],
+  /// File mode (octal), stored as ASCII bytes
+  pub mode: [u8; 8],
+  /// User ID of file owner (octal), stored as ASCII bytes
+  pub uid: [u8; 8],
+  /// Group ID of file owner (octal), stored as ASCII bytes
+  pub gid: [u8; 8],
+  /// File size in bytes (octal), stored as ASCII bytes
+  pub size: [u8; 12],
+  /// Modification time (epoch seconds, octal), stored as ASCII bytes
+  pub mtime: [u8; 12],
+  /// Header checksum (space-padded), stored as ASCII bytes
+  pub chksum: [u8; 8],
+  /// File type flag (e.g., 0 = file, 5 = directory)
+  pub typeflag: u8,
+  /// Target name of a symbolic link, null-terminated
+  pub linkname: [u8; 100],
+  // `v7` ends here and magic is 0
+  // `ustar` starts here and has the magic string "ustar\0" or "ustar"
+  // `gnu` starts here and has the magic string "ustar "
+  // `ustar` has version "00"
+  // `gnu` has version " \0"
+  /// Combined field for magic[4] and version[2].
+  pub magic_and_version: [u8; 8],
+  /// User name, null-terminated
+  pub uname: [u8; 32],
+  /// Group name, null-terminated
+  pub gname: [u8; 32],
+  /// Major device number (octal), stored as ASCII bytes
+  pub devmajor: [u8; 8],
+  /// Minor device number (octal), stored as ASCII bytes
+  pub devminor: [u8; 8],
+  /// Path prefix used if name exceeds 100 bytes, null-terminated
+  pub prefix: [u8; 155],
+  /// Unused padding to fill the 512-byte header block
+  pub padding: [u8; 12],
+}
