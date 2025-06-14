@@ -95,7 +95,7 @@ impl<'a, W: Write> Write for BufferedWriter<'a, W> {
 mod tests {
   use super::*;
 
-  use crate::{writer_buffer::BufferWriter, writer_bytewise::BytewiseWriter};
+  use crate::no_std_io::{BufferWriter, BytewiseWriter};
 
   #[test]
   fn test_buffered_writer_chunks_correctly_always_chunk() {

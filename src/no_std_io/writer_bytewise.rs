@@ -39,7 +39,7 @@ impl<W: Write> Write for BytewiseWriter<'_, W> {
 mod tests {
   use super::*;
 
-  use crate::writer_buffer::BufferWriter;
+  use crate::no_std_io::BufferWriter;
 
   #[test]
   fn test_bytewise_writer_writes_correctly() {

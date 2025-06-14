@@ -84,7 +84,7 @@ impl<'a, R: Read> ExactReader<'a, R> {
 mod tests {
   use super::*;
 
-  use crate::{reader_bytewise::BytewiseReader, reader_slice::SliceReader};
+  use crate::no_std_io::{BytewiseReader, SliceReader};
 
   #[test]
   fn test_buffered_reader_reads_correctly() {

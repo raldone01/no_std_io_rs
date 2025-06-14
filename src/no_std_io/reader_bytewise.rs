@@ -39,7 +39,7 @@ impl<'a, R: Read> Read for BytewiseReader<'a, R> {
 mod tests {
   use super::*;
 
-  use crate::reader_slice::SliceReader;
+  use crate::no_std_io::SliceReader;
 
   #[test]
   fn test_bytewise_reader_reads_correctly() {

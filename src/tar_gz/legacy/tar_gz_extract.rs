@@ -1,14 +1,7 @@
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use hashbrown::HashMap;
 
-use crate::{
-  buffer_reader::BufferReader,
-  buffered_reader::BufferedReader,
-  compressed_reader::CompressedReader,
-  dynamic_error::DynamicError,
-  no_std_io::{IoError, Read},
-  tar_constants::ustar::*,
-};
+use crate::{dynamic_error::DynamicError, no_std_io::Read, tar_constants::ustar::*};
 
 /// Represents a parsed TAR header containing file metadata.
 #[derive(Debug)]
