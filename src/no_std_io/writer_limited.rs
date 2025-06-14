@@ -20,6 +20,12 @@ impl<'a, W: Write> LimitedWriter<'a, W> {
       bytes_written: 0,
     }
   }
+
+  /// Returns the number of bytes written so far.
+  #[must_use]
+  pub fn bytes_written(&self) -> usize {
+    self.bytes_written
+  }
 }
 
 #[derive(Error, Debug)]

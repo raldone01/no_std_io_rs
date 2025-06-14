@@ -17,8 +17,8 @@ Features of this crate:
 * Fix clippy lints
 
 # TODO (long term):
-* Add `alloc` feature
 * After maturing enough consider moving `no_std_io` to its own crate.
+* Add `alloc` feature only makes sense once `no_std_io` is split off into its own crate.
 * Add filesystem trait and filesystem agnostic file api. (Default ship a memory based implementation serialize to tar_gz and extract from tar_gz.)
 
 # TODO fever dreams:

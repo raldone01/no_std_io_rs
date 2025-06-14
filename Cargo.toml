@@ -8,7 +8,9 @@ edition = "2021"
 miniz_oxide = { version = "0.8", default-features = false, features = [
   "with-alloc",
 ] }
-hashbrown = { version = "0.15", default-features = false }
+hashbrown = { version = "0.15", default-features = false, features = [
+  "default-hasher",
+] }
 thiserror = { version = "2.0", default-features = false }
 relative-path = { version = "2.0", default-features = false, features = [
   "alloc",

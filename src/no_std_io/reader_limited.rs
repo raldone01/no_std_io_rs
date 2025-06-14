@@ -20,6 +20,12 @@ impl<'a, R: Read> LimitedReader<'a, R> {
       bytes_read: 0,
     }
   }
+
+  /// Returns the number of bytes read so far.
+  #[must_use]
+  pub fn bytes_read(&self) -> usize {
+    self.bytes_read
+  }
 }
 
 #[derive(Error, Debug)]

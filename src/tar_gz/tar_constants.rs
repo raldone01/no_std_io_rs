@@ -72,32 +72,68 @@ pub const TAR_ZERO_HEADER: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
 /// ## RARE:
 ///
 /// - `X` for extended header (pre-pax)
-#[repr(u8)]
 pub enum TarTypeFlag {
-  /// Regular file (legacy)
-  RegularFileLegacy = b'\0',
   /// Regular file
-  RegularFile = b'0',
+  RegularFile,
   /// Hard link
-  HardLink = b'1',
+  HardLink,
   /// Symbolic link
-  SymbolicLink = b'2',
+  SymbolicLink,
   /// Character device
-  CharacterDevice = b'3',
+  CharacterDevice,
   /// Block device
-  BlockDevice = b'4',
+  BlockDevice,
   /// Directory
-  Directory = b'5',
+  Directory,
   /// FIFO (named pipe)
-  Fifo = b'6',
+  Fifo,
   /// Extended header `pax`
-  ExtendedHeaderPrePax = b'x',
+  ExtendedHeaderPrePax,
   /// Global extended header `pax`
-  GlobalExtendedHeaderPax = b'g',
+  GlobalExtendedHeaderPax,
   /// Long name (GNU)
-  LongNameGnu = b'L',
+  LongNameGnu,
   /// Long link name (GNU)
-  LongLinkNameGnu = b'K',
+  LongLinkNameGnu,
+  UnknownTypeFlag(u8),
+}
+
+impl From<u8> for TarTypeFlag {
+  fn from(value: u8) -> Self {
+    match value {
+      b'\0' | b'0' => TarTypeFlag::RegularFile,
+      b'1' => TarTypeFlag::HardLink,
+      b'2' => TarTypeFlag::SymbolicLink,
+      b'3' => TarTypeFlag::CharacterDevice,
+      b'4' => TarTypeFlag::BlockDevice,
+      b'5' => TarTypeFlag::Directory,
+      b'6' => TarTypeFlag::Fifo,
+      b'x' => TarTypeFlag::ExtendedHeaderPrePax,
+      b'g' => TarTypeFlag::GlobalExtendedHeaderPax,
+      b'L' => TarTypeFlag::LongNameGnu,
+      b'K' => TarTypeFlag::LongLinkNameGnu,
+      _ => TarTypeFlag::UnknownTypeFlag(value),
+    }
+  }
+}
+
+impl From<TarTypeFlag> for u8 {
+  fn from(value: TarTypeFlag) -> Self {
+    match value {
+      TarTypeFlag::RegularFile => b'\0',
+      TarTypeFlag::HardLink => b'1',
+      TarTypeFlag::SymbolicLink => b'2',
+      TarTypeFlag::CharacterDevice => b'3',
+      TarTypeFlag::BlockDevice => b'4',
+      TarTypeFlag::Directory => b'5',
+      TarTypeFlag::Fifo => b'6',
+      TarTypeFlag::ExtendedHeaderPrePax => b'x',
+      TarTypeFlag::GlobalExtendedHeaderPax => b'g',
+      TarTypeFlag::LongNameGnu => b'L',
+      TarTypeFlag::LongLinkNameGnu => b'K',
+      TarTypeFlag::UnknownTypeFlag(value) => value,
+    }
+  }
 }
 
 pub struct TarHeaderRaw {
