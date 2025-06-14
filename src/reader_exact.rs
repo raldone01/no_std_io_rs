@@ -19,8 +19,8 @@ pub enum ReadExactError<U> {
   UnexpectedEof,
   #[error("Expected EOF, but got more data")]
   UnexpectedData,
-  #[error("Memory limit exceeded for buffered read")]
-  MemoryLimitExceeded,
+  #[error("Memory limit of {0} bytes exceeded for exact read")]
+  MemoryLimitExceeded(usize),
   #[error("Underlying I/O error: {0:?}")]
   Io(#[from] U),
 }
@@ -38,9 +38,9 @@ impl<'a, R: Read> ExactReader<'a, R> {
   }
 
   /// Reads exactly `byte_count` bytes from the underlying reader.
-  pub fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<R::Error>> {
+  pub fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<R::ReadError>> {
     if byte_count > self.max_buffer_size {
-      return Err(ReadExactError::MemoryLimitExceeded);
+      return Err(ReadExactError::MemoryLimitExceeded(self.max_buffer_size));
     }
     if byte_count == 0 {
       let bytes_read = self.source.read(&mut [])?;
@@ -82,15 +82,16 @@ impl<'a, R: Read> ExactReader<'a, R> {
 
 #[cfg(test)]
 mod tests {
-  use crate::{reader_bytewise::BytewiseReader, reader_slice::SliceReader};
-
   use super::*;
+
+  use crate::{reader_bytewise::BytewiseReader, reader_slice::SliceReader};
 
   #[test]
   fn test_buffered_reader_reads_correctly() {
     let source_data = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     let mut slice_reader = SliceReader::new(&source_data);
-    let mut reader = ExactReader::new(4, &mut slice_reader);
+    let max_buffer_size = 4;
+    let mut reader = ExactReader::new(max_buffer_size, &mut slice_reader);
 
     // Read the first 3 bytes
     assert_eq!(reader.read_exact(3).unwrap(), &[0, 1, 2]);
@@ -104,7 +105,7 @@ mod tests {
     // Test MemoryLimitExceeded error
     assert!(matches!(
       reader.read_exact(5).unwrap_err(),
-      ReadExactError::MemoryLimitExceeded
+      ReadExactError::MemoryLimitExceeded(max_buffer_size)
     ));
 
     // Test UnexpectedEof error

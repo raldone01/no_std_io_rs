@@ -48,9 +48,9 @@ pub enum CompressedReadError<U> {
 }
 
 impl<R: Read> Read for CompressedReader<'_, R> {
-  type Error = CompressedReadError<R::Error>;
+  type ReadError = CompressedReadError<R::ReadError>;
 
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::Error> {
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     if output_buffer.is_empty() {
       return Ok(0); // Nothing to read into
     }
@@ -68,8 +68,8 @@ impl<R: Read> Read for CompressedReader<'_, R> {
         miniz_oxide::MZFlush::None,
       );
       if result.bytes_consumed != bytes_read_count {
-        // The compressor did not consume all the bytes we read, which is unexpected.
-        return Err(Self::Error::DecompressorDidNotConsumeInput {
+        // The decompressor did not consume all the bytes we read, which is unexpected.
+        return Err(Self::ReadError::DecompressorDidNotConsumeInput {
           bytes_input: bytes_read_count,
           bytes_consumed: result.bytes_consumed,
         });
@@ -80,20 +80,18 @@ impl<R: Read> Read for CompressedReader<'_, R> {
             return Ok(result.bytes_written);
           }
         },
-        Ok(MZStatus::StreamEnd) => {
-          return Ok(result.bytes_written);
-        },
+        Ok(MZStatus::StreamEnd) => return Ok(result.bytes_written),
         Ok(MZStatus::NeedDict) => {
           panic!("Decompressor returned NeedDict status, which is not supported in this context");
         },
         Err(MZError::Buf) => {
           if bytes_read_count == 0 {
-            return Err(Self::Error::UnexpectedEof);
+            return Err(Self::ReadError::UnexpectedEof);
           }
+          // Not enough input data so we try again.
         },
-        Err(e) => return Err(Self::Error::MZError(e)),
+        Err(e) => return Err(Self::ReadError::MZError(e)),
       }
-      // Not enough input data so we try again.
     }
   }
 }
@@ -101,6 +99,7 @@ impl<R: Read> Read for CompressedReader<'_, R> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
   use crate::{
     reader_bytewise::BytewiseReader, reader_exact::ExactReader, reader_slice::SliceReader,
   };

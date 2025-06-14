@@ -1,34 +1,55 @@
-use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 use miniz_oxide::{
   deflate::{
     core::{create_comp_flags_from_zip_params, CompressorOxide},
     stream::deflate,
   },
-  MZFlush,
+  MZError, MZFlush, MZStatus, StreamResult,
 };
+use thiserror::Error;
 
-use crate::{
-  dynamic_error::DynamicError,
-  no_std_io::{IoError, Write},
-};
+use crate::no_std_io::{write_all, Write, WriteAllError};
 
-pub struct CompressedWriter<W: Write> {
+/// Don't forget to call `finish()` when done to finalize the compression and flush any remaining data.
+pub struct CompressedWriter<'a, W: Write> {
   compressor: CompressorOxide,
-  target_writer: W,
+  target_writer: &'a mut W,
   finished: bool,
   pending_flush: MZFlush,
   tmp_buffer: Vec<u8>,
 }
 
-impl<W: Write> CompressedWriter<W> {
+#[derive(Error, Debug)]
+pub enum CompressedWriteError<WWE, WFE> {
+  #[error("Compressor did not consume all input bytes: {bytes_input} bytes read, {bytes_consumed} bytes consumed")]
+  CompressorDidNotConsumeInput {
+    bytes_input: usize,
+    bytes_consumed: usize,
+  },
+  #[error("Compression error: {0:?}")]
+  MZError(MZError),
+  #[error("The writer is already finished and cannot accept more data")]
+  Finished,
+  #[error("Underlying I/O error on write: {0:?}")]
+  IoWrite(WriteAllError<WWE>),
+  #[error("Underlying I/O error on flush: {0:?}")]
+  IoFlush(WFE),
+}
+
+impl<'a, W: Write> CompressedWriter<'a, W> {
   #[must_use]
-  pub fn new(writer: W, level: u8, zlib_wrapped: bool, tmp_buffer_size: usize) -> Self {
+  pub fn new(
+    target_writer: &'a mut W,
+    level: u8,
+    zlib_wrapped: bool,
+    tmp_buffer_size: usize,
+  ) -> Self {
     // use zlib wrapper (window bits == 1)
     let flags = create_comp_flags_from_zip_params(level.into(), zlib_wrapped as i32, 0);
     Self {
       compressor: CompressorOxide::new(flags),
-      target_writer: writer,
+      target_writer,
       finished: false,
       pending_flush: MZFlush::None,
       tmp_buffer: vec![0_u8; tmp_buffer_size],
@@ -54,12 +75,11 @@ impl<W: Write> CompressedWriter<W> {
     }
   }
 
-  #[must_use]
-  pub fn wants_to_sync(&self) -> bool {
-    self.pending_flush != MZFlush::None
-  }
-
-  fn write_internal(&mut self, input_buffer: &[u8], flush: MZFlush) -> Result<(), IoError> {
+  fn write_internal(
+    &mut self,
+    input_buffer: &[u8],
+    flush: MZFlush,
+  ) -> Result<StreamResult, CompressedWriteError<W::WriteError, W::FlushError>> {
     self.pending_flush = Self::strongest_flush(self.pending_flush, flush);
 
     let result = deflate(
@@ -69,68 +89,115 @@ impl<W: Write> CompressedWriter<W> {
       self.pending_flush,
     );
     if result.bytes_consumed != input_buffer.len() {
-      return Err(IoError::Io(Box::new(DynamicError(format!(
-        "Deflate consumed {} bytes, expected {}: {:?}",
-        result.bytes_consumed,
-        input_buffer.len(),
-        result,
-      )))));
+      // The compressor did not consume all the bytes we read, which is unexpected.
+      return Err(
+        CompressedWriteError::<W::WriteError, W::FlushError>::CompressorDidNotConsumeInput {
+          bytes_input: input_buffer.len(),
+          bytes_consumed: result.bytes_consumed,
+        },
+      );
     }
-    if result.bytes_written > 0 {
-      // Write the compressed data to the target buffer
-      self.target_writer.write(
-        &self.tmp_buffer[..result.bytes_written],
-        self.wants_to_sync(),
-      )?;
-    }
-    result.status.map_err(|e| {
-      IoError::Io(Box::new(DynamicError(format!(
-        "Compression error: {:?}",
-        e
-      ))))
-    })?;
+    match result.status {
+      Ok(MZStatus::Ok) | Err(MZError::Buf) => {},
+      Ok(MZStatus::StreamEnd) => {
+        self.finished = true;
+      },
+      Ok(MZStatus::NeedDict) => {
+        panic!("Compressor returned NeedDict status, which is not supported in this context");
+      },
+      Err(e) => return Err(CompressedWriteError::<W::WriteError, W::FlushError>::MZError(e)),
+    };
+    let sync_hint = self.pending_flush != MZFlush::None;
+    write_all(
+      self.target_writer,
+      &self.tmp_buffer[..result.bytes_written],
+      sync_hint,
+    )
+    .map_err(CompressedWriteError::<W::WriteError, W::FlushError>::IoWrite)?;
     self.pending_flush = MZFlush::None;
-    Ok(())
+    Ok(result)
   }
 
   #[must_use]
   pub fn is_finished(&self) -> bool {
     self.finished
   }
+
+  pub fn finish(&mut self) -> Result<(), CompressedWriteError<W::WriteError, W::FlushError>> {
+    while self.write_internal(&[], MZFlush::Finish)?.bytes_written != 0 {}
+    self.finished = true;
+    Ok(())
+  }
 }
 
-impl<W: Write> Write for CompressedWriter<W> {
-  fn write(&mut self, buffer_input: &[u8], sync_hint: bool) -> Result<(), IoError> {
+impl<W: Write> Write for CompressedWriter<'_, W> {
+  type WriteError = CompressedWriteError<W::WriteError, W::FlushError>;
+  type FlushError = CompressedWriteError<W::WriteError, W::FlushError>;
+
+  fn write(&mut self, buffer_input: &[u8], sync_hint: bool) -> Result<usize, Self::WriteError> {
     if self.finished {
-      return Err(IoError::Io(Box::new(DynamicError(String::from(
-        "Writer is already finished",
-      )))));
+      return Err(CompressedWriteError::Finished);
     }
     let flush = if sync_hint {
       MZFlush::Sync
     } else {
       MZFlush::None
     };
-    self.write_internal(buffer_input, flush)
+    self
+      .write_internal(buffer_input, flush)
+      .map(|result| result.bytes_consumed)
   }
 
-  fn flush(&mut self) -> Result<(), IoError> {
-    let result = self.write_internal(&[], MZFlush::Finish);
-    if result.is_err() {
-      return result;
+  fn flush(&mut self) -> Result<(), Self::FlushError> {
+    if self.finished {
+      return Err(CompressedWriteError::Finished);
     }
-    self.finished = true;
-    result
+    // We don't know why the following doesn't work.
+    self.write_internal(&[], MZFlush::Sync)?;
+    // Instead, we queue a flush.
+    //self.pending_flush = Self::strongest_flush(self.pending_flush, MZFlush::Sync);
+    self
+      .target_writer
+      .flush()
+      .map_err(CompressedWriteError::<W::WriteError, W::FlushError>::IoFlush)?;
+    Ok(())
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use crate::writer_buffer::BufferWriter;
-
   use super::*;
 
-  fn run_compressed_writer_test(use_zlib: bool) {
+  use crate::{no_std_io::write_all, writer_buffer::BufferWriter, writer_bytewise::BytewiseWriter};
+
+  #[test]
+  fn test_compressed_writer_buffer_size_dynamic_questionmark() {
+    let input_string = "Hello, world! This is a test of the BufferedWriter.".repeat(50);
+    let uncompressed_data = input_string.as_bytes();
+
+    let _reference_compressed_data =
+      miniz_oxide::deflate::compress_to_vec_zlib(uncompressed_data, 6);
+
+    let mut buffer_writer = BufferWriter::new(128);
+    // A buffered writer can counteract the overhead of bytewise writing
+    let mut bytewise_writer_after = BytewiseWriter::new(&mut buffer_writer);
+    let mut compressed_writer = CompressedWriter::new(&mut bytewise_writer_after, 6, true, 1);
+    let mut bytewise_writer_before = BytewiseWriter::new(&mut compressed_writer);
+    write_all(&mut bytewise_writer_before, uncompressed_data, false)
+      .expect("Failed to write uncompressed data to compressed writer");
+    bytewise_writer_before
+      .flush()
+      .expect("Failed to flush compressed data");
+    compressed_writer
+      .finish()
+      .expect("Failed to finish compressed writer");
+    let compressed_data = buffer_writer.to_vec();
+    let decompressed_data = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed_data)
+      .expect("Failed to decompress data");
+    assert_eq!(decompressed_data, uncompressed_data);
+  }
+
+  fn test_compressed_writer(use_zlib: bool) {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedWriter.";
 
     let _reference_compressed_data = if use_zlib {
@@ -139,15 +206,18 @@ mod tests {
       miniz_oxide::deflate::compress_to_vec(uncompressed_data, 6)
     };
 
-    let output_buffer = BufferWriter::new(128);
-    let mut compressed_writer = CompressedWriter::new(output_buffer, 6, use_zlib, 128);
-    compressed_writer
-      .write(uncompressed_data, false)
-      .expect("Failed to write compressed data");
+    let mut buffer_writer = BufferWriter::new(128);
+    let mut compressed_writer = CompressedWriter::new(&mut buffer_writer, 6, use_zlib, 128);
+    write_all(&mut compressed_writer, uncompressed_data, false)
+      .expect("Failed to write uncompressed data to compressed writer");
+    // check if it can survive a flush
     compressed_writer
       .flush()
       .expect("Failed to flush compressed data");
-    let compressed_data = compressed_writer.target_writer.to_vec();
+    compressed_writer
+      .finish()
+      .expect("Failed to finish compressed writer");
+    let compressed_data = buffer_writer.to_vec();
     let decompressed_data = if use_zlib {
       miniz_oxide::inflate::decompress_to_vec_zlib(&compressed_data)
     } else {
@@ -158,12 +228,37 @@ mod tests {
   }
 
   #[test]
-  fn test_compressed_writer_raw() {
-    run_compressed_writer_test(false);
+  fn test_compressed_writer_writes_correctly_raw() {
+    test_compressed_writer(false);
   }
 
   #[test]
-  fn test_compressed_writer_zlib() {
-    run_compressed_writer_test(true);
+  fn test_compressed_writer_writes_correctly_zlib() {
+    test_compressed_writer(true);
+  }
+
+  #[test]
+  fn test_compressed_writer_writes_correctly_bytewise() {
+    let uncompressed_data = b"Hello, world! This is a test of the CompressedWriter.";
+
+    let _reference_compressed_data =
+      miniz_oxide::deflate::compress_to_vec_zlib(uncompressed_data, 6);
+
+    let mut buffer_writer = BufferWriter::new(4096);
+    let mut bytewise_writer = BytewiseWriter::new(&mut buffer_writer);
+    let mut compressed_writer = CompressedWriter::new(&mut bytewise_writer, 6, true, 128);
+    write_all(&mut compressed_writer, uncompressed_data, false)
+      .expect("Failed to write uncompressed data to compressed writer");
+    // check if it can survive a flush
+    compressed_writer
+      .flush()
+      .unwrap_or_else(|e| panic!("Failed to flush compressed data: {}", e));
+    compressed_writer
+      .finish()
+      .expect("Failed to finish compressed writer");
+    let compressed_data = buffer_writer.to_vec();
+    let decompressed_data = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed_data)
+      .expect("Failed to decompress data");
+    assert_eq!(decompressed_data, uncompressed_data);
   }
 }

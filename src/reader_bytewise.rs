@@ -13,9 +13,9 @@ impl<'a, R: Read> BytewiseReader<'a, R> {
 }
 
 impl<'a, R: Read> Read for BytewiseReader<'a, R> {
-  type Error = R::Error;
+  type ReadError = R::ReadError;
 
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::Error> {
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     if output_buffer.is_empty() {
       return Ok(0); // Nothing to read into
     }
@@ -37,9 +37,9 @@ impl<'a, R: Read> Read for BytewiseReader<'a, R> {
 
 #[cfg(test)]
 mod tests {
-  use crate::reader_slice::SliceReader;
-
   use super::*;
+
+  use crate::reader_slice::SliceReader;
 
   #[test]
   fn test_bytewise_reader_reads_correctly() {

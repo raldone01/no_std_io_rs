@@ -1,3 +1,5 @@
+use core::convert::Infallible;
+
 use alloc::vec::Vec;
 use thiserror::Error;
 
@@ -38,18 +40,18 @@ impl BufferWriter {
 
 #[derive(Error, Debug)]
 pub enum BufferWriterWriteError {
-  #[error("Memory limit exceeded for writer buffer")]
-  MemoryLimitExceeded,
+  #[error("Memory limit of {0} bytes exceeded for writer buffer")]
+  MemoryLimitExceeded(usize),
 }
 
 impl Write for BufferWriter {
   type WriteError = BufferWriterWriteError;
-  type FlushError = core::convert::Infallible;
+  type FlushError = Infallible;
 
   fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
     let available = self.max_buffer_size.saturating_sub(self.target.len());
     if available == 0 {
-      return Err(Self::WriteError::MemoryLimitExceeded);
+      return Err(Self::WriteError::MemoryLimitExceeded(self.max_buffer_size));
     }
 
     let n = core::cmp::min(input_buffer.len(), available);
@@ -69,7 +71,8 @@ mod tests {
 
   #[test]
   fn test_buffer_writer_respects_limit() {
-    let mut writer = BufferWriter::new(5);
+    let max_buffer_size = 5;
+    let mut writer = BufferWriter::new(max_buffer_size);
     let data = b"hello world";
 
     // Should write only up to the limit
@@ -79,7 +82,10 @@ mod tests {
 
     // Further writes should return MemoryLimitExceeded
     let err = writer.write(b"!", false).unwrap_err();
-    assert!(matches!(err, BufferWriterWriteError::MemoryLimitExceeded));
+    assert!(matches!(
+      err,
+      BufferWriterWriteError::MemoryLimitExceeded(max_buffer_size)
+    ));
   }
 
   #[test]

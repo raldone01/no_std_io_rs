@@ -19,11 +19,11 @@ impl<W: Write> Write for BytewiseWriter<'_, W> {
   fn write(&mut self, input_buffer: &[u8], sync_hint: bool) -> Result<usize, Self::WriteError> {
     let mut bytes_written = 0;
     for &byte in input_buffer[..input_buffer.len().saturating_sub(1)].iter() {
-      bytes_written = self.target_writer.write(&[byte], false)?;
+      bytes_written += self.target_writer.write(&[byte], false)?;
     }
     // write the last byte with the sync hint
     if !input_buffer.is_empty() {
-      bytes_written = self
+      bytes_written += self
         .target_writer
         .write(&[input_buffer[input_buffer.len() - 1]], sync_hint)?;
     }
@@ -38,6 +38,7 @@ impl<W: Write> Write for BytewiseWriter<'_, W> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
   use crate::writer_buffer::BufferWriter;
 
   #[test]
@@ -50,7 +51,7 @@ mod tests {
 
     // Write the full buffer with sync_hint = true
     let bytes_written = writer.write(input, true).unwrap();
-    assert_eq!(bytes_written, 1); // Only the last byte write result is returned
+    assert_eq!(bytes_written, 4);
 
     // Flush should succeed
     assert!(writer.flush().is_ok());

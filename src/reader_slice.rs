@@ -1,3 +1,5 @@
+use core::convert::Infallible;
+
 use crate::no_std_io::Read;
 
 /// A reader that reads data from a byte slice.
@@ -13,9 +15,9 @@ impl<'a> SliceReader<'a> {
 }
 
 impl<'a> Read for SliceReader<'a> {
-  type Error = core::convert::Infallible;
+  type ReadError = Infallible;
 
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::Error> {
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     let n = core::cmp::min(output_buffer.len(), self.source.len());
     output_buffer[..n].copy_from_slice(&self.source[..n]);
     self.source = &self.source[n..];
