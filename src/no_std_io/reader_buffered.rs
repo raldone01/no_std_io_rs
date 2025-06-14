@@ -1,3 +1,4 @@
+use core::fmt::Debug;
 use core::panic;
 
 use alloc::vec::Vec;
@@ -6,9 +7,24 @@ use thiserror::Error;
 
 use crate::no_std_io::Read;
 
+pub trait IBufferedReader<'backing>: Read {
+  type ReadExactError;
+  type BackingImplementation: Read + ?Sized;
+
+  /// Creates a forked reader that can read from the same underlying data without consuming it.
+  #[must_use]
+  fn fork_reader(&mut self) -> ForkedBufferedReader<'_, 'backing, Self::BackingImplementation>;
+
+  /// Reads exactly `byte_count` bytes from the underlying reader consuming them.
+  fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], Self::ReadExactError>;
+
+  /// Peeks exactly `byte_count` bytes from the underlying reader without consuming them.
+  fn peek_exact(&mut self, byte_count: usize) -> Result<&[u8], Self::ReadExactError>;
+}
+
 /// A buffered reader that allows pulling exact sized chunks from an underlying reader.
-pub struct BufferedReader<'a, R: Read> {
-  source: &'a mut R,
+pub struct BufferedReader<'backing, R: Read + ?Sized> {
+  source: &'backing mut R,
   buffer: Vec<u8>,
   last_user_read: usize,
   bytes_in_buffer: usize,
@@ -16,7 +32,7 @@ pub struct BufferedReader<'a, R: Read> {
   read_chunk_size: usize,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum BufferedReaderReadError<U> {
   #[error("Unexpected EOF while reading")]
   UnexpectedEof,
@@ -26,9 +42,9 @@ pub enum BufferedReaderReadError<U> {
   Io(#[from] U),
 }
 
-impl<'a, R: Read> BufferedReader<'a, R> {
+impl<'backing, R: Read + ?Sized> BufferedReader<'backing, R> {
   #[must_use]
-  pub fn new(source: &'a mut R, max_buffer_size: usize, read_chunk_size: usize) -> Self {
+  pub fn new(source: &'backing mut R, max_buffer_size: usize, read_chunk_size: usize) -> Self {
     Self {
       source,
       buffer: Vec::new(),
@@ -91,25 +107,26 @@ impl<'a, R: Read> BufferedReader<'a, R> {
     let result = &self.buffer[..byte_count];
     Ok(result)
   }
+}
 
-  /// Reads exactly `byte_count` bytes from the underlying reader consuming them.
-  pub fn read_exact(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<&[u8], BufferedReaderReadError<R::ReadError>> {
+impl<'backing, R: Read + ?Sized> IBufferedReader<'backing> for BufferedReader<'backing, R> {
+  type ReadExactError = BufferedReaderReadError<R::ReadError>;
+  type BackingImplementation = R;
+
+  fn fork_reader(&mut self) -> ForkedBufferedReader<'_, 'backing, Self::BackingImplementation> {
+    ForkedBufferedReader::new(self, 0)
+  }
+
+  fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], Self::ReadExactError> {
     self.read_exact_internal(byte_count, false)
   }
 
-  /// Peeks exactly `byte_count` bytes from the underlying reader without consuming them.
-  pub fn peek_exact(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<&[u8], BufferedReaderReadError<R::ReadError>> {
+  fn peek_exact(&mut self, byte_count: usize) -> Result<&[u8], Self::ReadExactError> {
     self.read_exact_internal(byte_count, true)
   }
 }
 
-impl<R: Read> Read for BufferedReader<'_, R> {
+impl<R: Read + ?Sized> Read for BufferedReader<'_, R> {
   type ReadError = R::ReadError;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -161,6 +178,95 @@ impl<R: Read> Read for BufferedReader<'_, R> {
   }
 }
 
+pub struct ForkedBufferedReader<'a, 'backing, R: Read + ?Sized> {
+  buffered_reader: &'a mut BufferedReader<'backing, R>,
+  position: usize,
+}
+
+impl<'a, 'backing, R: Read + ?Sized> ForkedBufferedReader<'a, 'backing, R> {
+  #[must_use]
+  pub fn new(buffered_reader: &'a mut BufferedReader<'backing, R>, start_position: usize) -> Self {
+    Self {
+      buffered_reader,
+      position: start_position,
+    }
+  }
+
+  pub fn reset(&mut self) {
+    self.position = 0;
+  }
+
+  pub fn bytes_read(&self) -> usize {
+    self.position
+  }
+}
+
+impl<'a, 'backing, R: Read + ?Sized> IBufferedReader<'backing>
+  for ForkedBufferedReader<'a, 'backing, R>
+{
+  type ReadExactError = BufferedReaderReadError<R::ReadError>;
+  type BackingImplementation = R;
+
+  fn fork_reader(&mut self) -> ForkedBufferedReader<'_, 'backing, Self::BackingImplementation> {
+    ForkedBufferedReader::new(self.buffered_reader, self.position)
+  }
+
+  fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], Self::ReadExactError> {
+    let full_buffer = self
+      .buffered_reader
+      .peek_exact(self.position + byte_count)?;
+    let sliced_buffer = &full_buffer[self.position..];
+    self.position += byte_count;
+    Ok(sliced_buffer)
+  }
+
+  fn peek_exact(&mut self, byte_count: usize) -> Result<&[u8], Self::ReadExactError> {
+    let full_buffer = self
+      .buffered_reader
+      .peek_exact(self.position + byte_count)?;
+    Ok(&full_buffer[self.position..])
+  }
+}
+
+#[derive(Error, Debug)]
+pub enum ForkedBufferedReaderReadError<U> {
+  #[error("Memory limit of {0} bytes exceeded for exact read")]
+  MemoryLimitExceeded(usize),
+  #[error("Underlying read error: {0:?}")]
+  Io(#[from] U),
+}
+
+impl<R: Read + ?Sized> Read for ForkedBufferedReader<'_, '_, R> {
+  type ReadError = ForkedBufferedReaderReadError<R::ReadError>;
+
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+    if output_buffer.is_empty() {
+      return Ok(0);
+    }
+
+    let bytes = match self.read_exact(output_buffer.len()) {
+      Ok(bytes) => bytes,
+      Err(BufferedReaderReadError::MemoryLimitExceeded(max_buffer_size)) => {
+        return Err(ForkedBufferedReaderReadError::MemoryLimitExceeded(
+          max_buffer_size,
+        ));
+      },
+      Err(BufferedReaderReadError::UnexpectedEof) => {
+        let position = self.position;
+        // If we reach here, it means we tried to read more data than was available.
+        // This is an error condition for read_exact, but here we can return what we got.
+        &self
+          .read_exact(self.buffered_reader.bytes_in_buffer)
+          .unwrap_or_else(|_| panic!("Failed to read internal buffer. This is a bug!"))[position..]
+      },
+      Err(BufferedReaderReadError::Io(e)) => return Err(ForkedBufferedReaderReadError::Io(e)),
+    };
+
+    output_buffer.copy_from_slice(bytes);
+    Ok(output_buffer.len())
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -187,10 +293,10 @@ mod tests {
     assert_eq!(reader.read_exact(3).unwrap(), &[7, 8, 9]);
 
     // Test MemoryLimitExceeded error
-    assert!(matches!(
+    assert_eq!(
       reader.read_exact(5).unwrap_err(),
       BufferedReaderReadError::MemoryLimitExceeded(max_buffer_size)
-    ));
+    );
 
     // Test UnexpectedEof error
     assert!(matches!(
@@ -246,5 +352,36 @@ mod tests {
     let bytes_read = buffered_reader.read(read_buffer).unwrap();
     assert_eq!(&read_buffer, b", world!");
     assert_eq!(bytes_read, 8);
+  }
+
+  #[test]
+  fn test_forked_buffered_reader() {
+    let source_data = b"Hello, world!";
+    let mut slice_reader = SliceReader::new(source_data);
+    let mut buffered_reader = BufferedReader::new(&mut slice_reader, 12, 1);
+
+    let mut forked_reader = buffered_reader.fork_reader();
+
+    // Read the first 5 bytes
+    assert_eq!(forked_reader.read_exact(5).unwrap(), b"Hello");
+
+    let mut fokred_forked_reader = forked_reader.fork_reader();
+    // Peek the next 7 bytes without consuming them
+    assert_eq!(fokred_forked_reader.peek_exact(7).unwrap(), b", world");
+
+    // Peek the next 7 bytes without consuming them
+    assert_eq!(forked_reader.peek_exact(7).unwrap(), b", world");
+
+    // Read the next 7 bytes
+    assert_eq!(forked_reader.read_exact(7).unwrap(), b", world");
+
+    // Check that out of memory error is handled correctly
+    assert_eq!(
+      forked_reader.read_exact(1).unwrap_err(),
+      BufferedReaderReadError::MemoryLimitExceeded(12)
+    );
+
+    // Check that we can still read from the original buffered reader
+    assert_eq!(buffered_reader.read_exact(2).unwrap(), b"He");
   }
 }

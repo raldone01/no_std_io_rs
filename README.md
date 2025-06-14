@@ -15,6 +15,7 @@ Features of this crate:
 * gen `ustar` tar
 * Add feature to opt in to time dependency.
 * Fix clippy lints
+* Add `emscripten` feature to enable `no_std_io` compatibility.
 
 # TODO (long term):
 * After maturing enough consider moving `no_std_io` to its own crate.

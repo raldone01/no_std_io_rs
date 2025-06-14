@@ -1,18 +1,18 @@
 use crate::no_std_io::Write;
 
 /// A writer that writes data byte by byte, useful for testing.
-pub struct BytewiseWriter<'a, W: Write> {
+pub struct BytewiseWriter<'a, W: Write + ?Sized> {
   target_writer: &'a mut W,
 }
 
-impl<'a, W: Write> BytewiseWriter<'a, W> {
+impl<'a, W: Write + ?Sized> BytewiseWriter<'a, W> {
   #[must_use]
   pub fn new(target_writer: &'a mut W) -> Self {
     Self { target_writer }
   }
 }
 
-impl<W: Write> Write for BytewiseWriter<'_, W> {
+impl<W: Write + ?Sized> Write for BytewiseWriter<'_, W> {
   type WriteError = W::WriteError;
   type FlushError = W::FlushError;
 

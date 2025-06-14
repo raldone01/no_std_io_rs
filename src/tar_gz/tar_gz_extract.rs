@@ -9,7 +9,7 @@ use crate::{
   tar_gz::{file_entry::ExtractedFile, tar_constants::TarTypeFlag},
 };
 
-struct TarExtractionState<'a, R: Read> {
+struct TarExtractionState<'a, R: Read + ?Sized> {
   reader: BufferedReader<'a, R>,
   global_extended_attributes: HashMap<String, String>,
   extracted_files: HashMap<RelativePathBuf, ExtractedFile>,
@@ -22,7 +22,7 @@ pub enum TarExtractionError<U> {
   Io(U),
 }
 
-impl<'a, R: Read> TarExtractionState<'a, R> {
+impl<'a, R: Read + ?Sized> TarExtractionState<'a, R> {
   #[must_use]
   fn new(reader: &'a mut R, max_temp_buffer_size: usize) -> Self {
     Self {

@@ -4,13 +4,13 @@ use crate::no_std_io::Read;
 
 /// A reader that only reads up to a specified limit.
 /// This is useful when handling user input to prevent resource exhaustion attacks.
-pub struct LimitedReader<'a, R: Read> {
+pub struct LimitedReader<'a, R: Read + ?Sized> {
   source_reader: &'a mut R,
   read_limit_bytes: usize,
   bytes_read: usize,
 }
 
-impl<'a, R: Read> LimitedReader<'a, R> {
+impl<'a, R: Read + ?Sized> LimitedReader<'a, R> {
   /// Creates a new `LimitedReader` with the specified limit.
   #[must_use]
   pub fn new(source_reader: &'a mut R, read_limit_bytes: usize) -> Self {
@@ -36,7 +36,7 @@ pub enum LimitedReaderReadError<U> {
   UnderlyingReadError(#[from] U),
 }
 
-impl<'a, R: Read> Read for LimitedReader<'a, R> {
+impl<'a, R: Read + ?Sized> Read for LimitedReader<'a, R> {
   type ReadError = LimitedReaderReadError<R::ReadError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {

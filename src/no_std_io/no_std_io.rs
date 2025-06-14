@@ -52,7 +52,7 @@ pub trait WriteAll: Write {
 }
 
 /// Blanket implementation for all `Write` implementors.
-impl<T: Write + ?Sized> WriteAll for T {
+impl<W: Write + ?Sized> WriteAll for W {
   fn write_all(
     &mut self,
     input_buffer: &[u8],
@@ -92,7 +92,7 @@ pub trait ReadAll: Read {
 }
 
 /// Blanket implementation for all `Read` implementors.
-impl<T: Read + ?Sized> ReadAll for T {
+impl<R: Read + ?Sized> ReadAll for R {
   fn read_all(&mut self, output_buffer: &mut [u8]) -> Result<(), ReadAllError<Self::ReadError>> {
     let requested_bytes = output_buffer.len();
     let mut buf = output_buffer;

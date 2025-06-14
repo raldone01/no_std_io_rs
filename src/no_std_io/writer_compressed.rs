@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
 
 /// Don't forget to call `finish()` when done to finalize the compression and flush any remaining data.
-pub struct CompressedWriter<'a, W: Write> {
+pub struct CompressedWriter<'a, W: Write + ?Sized> {
   compressor: CompressorOxide,
   target_writer: &'a mut W,
   finished: bool,
@@ -36,7 +36,7 @@ pub enum CompressedWriteError<WWE, WFE> {
   IoFlush(WFE),
 }
 
-impl<'a, W: Write> CompressedWriter<'a, W> {
+impl<'a, W: Write + ?Sized> CompressedWriter<'a, W> {
   #[must_use]
   pub fn new(
     target_writer: &'a mut W,
@@ -104,7 +104,7 @@ impl<'a, W: Write> CompressedWriter<'a, W> {
   }
 }
 
-impl<W: Write> Write for CompressedWriter<'_, W> {
+impl<W: Write + ?Sized> Write for CompressedWriter<'_, W> {
   type WriteError = CompressedWriteError<W::WriteError, W::FlushError>;
   type FlushError = CompressedWriteError<W::WriteError, W::FlushError>;
 

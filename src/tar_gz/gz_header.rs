@@ -92,7 +92,7 @@ impl GzHeader {
 
   /// Write a minimal gzip header to the given writer.
   /// Uses deflate compression method and Unix OS.
-  pub fn write<W: Write>(&self, mut w: W) -> Result<(), WriteAllError<W::WriteError>> {
+  pub fn write<W: Write + ?Sized>(&self, w: &mut W) -> Result<(), WriteAllError<W::WriteError>> {
     w.write_all(
       &[
         0x1F, 0x8B, // ID1, ID2

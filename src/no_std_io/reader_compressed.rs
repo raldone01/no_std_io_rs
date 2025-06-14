@@ -10,13 +10,13 @@ use thiserror::Error;
 
 use crate::no_std_io::Read;
 
-pub struct CompressedReader<'a, R: Read> {
+pub struct CompressedReader<'a, R: Read + ?Sized> {
   source_reader: &'a mut R,
   decompressor: InflateState,
   tmp_buffer: Vec<u8>,
 }
 
-impl<'a, R: Read> CompressedReader<'a, R> {
+impl<'a, R: Read + ?Sized> CompressedReader<'a, R> {
   #[must_use]
   pub fn new(reader: &'a mut R, zlib_wrapped: bool, tmp_buffer_size: usize) -> Self {
     let data_format = if zlib_wrapped {
@@ -47,7 +47,7 @@ pub enum CompressedReadError<U> {
   Io(#[from] U),
 }
 
-impl<R: Read> Read for CompressedReader<'_, R> {
+impl<R: Read + ?Sized> Read for CompressedReader<'_, R> {
   type ReadError = CompressedReadError<R::ReadError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -100,7 +100,7 @@ impl<R: Read> Read for CompressedReader<'_, R> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BufferedReader, BytewiseReader, SliceReader};
+  use crate::no_std_io::{BufferedReader, BytewiseReader, IBufferedReader as _, SliceReader};
 
   fn test_compressed_reader_simple_read(use_zlib: bool) {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";

@@ -1,18 +1,18 @@
 use crate::no_std_io::Read;
 
 /// A reader that reads data byte by byte, useful for testing.
-pub struct BytewiseReader<'a, R: Read> {
+pub struct BytewiseReader<'a, R: Read + ?Sized> {
   source_reader: &'a mut R,
 }
 
-impl<'a, R: Read> BytewiseReader<'a, R> {
+impl<'a, R: Read + ?Sized> BytewiseReader<'a, R> {
   #[must_use]
   pub fn new(source_reader: &'a mut R) -> Self {
     Self { source_reader }
   }
 }
 
-impl<'a, R: Read> Read for BytewiseReader<'a, R> {
+impl<'a, R: Read + ?Sized> Read for BytewiseReader<'a, R> {
   type ReadError = R::ReadError;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {

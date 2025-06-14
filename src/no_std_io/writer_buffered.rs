@@ -4,7 +4,7 @@ use thiserror::Error;
 use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
 
 /// A buffered writer accumulates data until it reaches a certain size before writing it to the target writer.
-pub struct BufferedWriter<'a, W: Write> {
+pub struct BufferedWriter<'a, W: Write + ?Sized> {
   target_writer: &'a mut W,
   buffer: Vec<u8>,
   pos: usize,
@@ -19,7 +19,7 @@ pub enum BufferedWriterWriteError<WWE, WFE> {
   IoFlush(WFE),
 }
 
-impl<'a, W: Write> BufferedWriter<'a, W> {
+impl<'a, W: Write + ?Sized> BufferedWriter<'a, W> {
   /// Creates a new `BufferedWriter` with the specified chunk buffer size.
   #[must_use]
   pub fn new(target_writer: &'a mut W, chunk_buffer_size: usize, always_chunk: bool) -> Self {
@@ -44,7 +44,7 @@ impl<'a, W: Write> BufferedWriter<'a, W> {
   }
 }
 
-impl<'a, W: Write> Write for BufferedWriter<'a, W> {
+impl<'a, W: Write + ?Sized> Write for BufferedWriter<'a, W> {
   type WriteError = BufferedWriterWriteError<W::WriteError, W::FlushError>;
   type FlushError = BufferedWriterWriteError<W::WriteError, W::FlushError>;
 

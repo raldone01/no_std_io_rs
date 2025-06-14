@@ -38,7 +38,7 @@ impl BufferWriter {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum BufferWriterWriteError {
   #[error("Memory limit of {0} bytes exceeded for writer buffer")]
   MemoryLimitExceeded(usize),
@@ -82,10 +82,10 @@ mod tests {
 
     // Further writes should return MemoryLimitExceeded
     let err = writer.write(b"!", false).unwrap_err();
-    assert!(matches!(
+    assert_eq!(
       err,
       BufferWriterWriteError::MemoryLimitExceeded(max_buffer_size)
-    ));
+    );
   }
 
   #[test]
