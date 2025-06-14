@@ -1,3 +1,4 @@
+//! This module provides traits and utilities for reading and writing bytes in a no-std environment.
 use thiserror::Error;
 
 /// Trait for reading bytes.
@@ -38,24 +39,37 @@ pub enum WriteAllError<U> {
   Io(#[from] U),
 }
 
-/// A utility function to write an entire buffer to a writer, retrying on interruptions.
-/// No flushing is performed, so it is the caller's responsibility to call `flush()` at the end.
-pub fn write_all<W: Write>(
-  writer: &mut W,
-  input_buffer: &[u8],
-  sync_hint: bool,
-) -> Result<(), WriteAllError<W::WriteError>> {
-  let mut buf = input_buffer;
-  while !buf.is_empty() {
-    match writer.write(buf, sync_hint) {
-      Ok(0) => {
-        return Err(WriteAllError::ZeroWrite {
-          bytes_written: input_buffer.len() - buf.len(),
-        });
-      },
-      Ok(n) => buf = &buf[n..], // advance buffer
-      Err(e) => return Err(WriteAllError::Io(e)),
+/// Extension trait that provides a `write_all` method for any `Write` implementor.
+pub trait WriteAll: Write {
+  /// Writes the entire buffer, retrying partial writes.
+  ///
+  /// Does not flush, but passes the `sync_hint` to the underlying `write` method.
+  fn write_all(
+    &mut self,
+    input_buffer: &[u8],
+    sync_hint: bool,
+  ) -> Result<(), WriteAllError<Self::WriteError>>;
+}
+
+/// Blanket implementation for all `Write` implementors.
+impl<T: Write + ?Sized> WriteAll for T {
+  fn write_all(
+    &mut self,
+    input_buffer: &[u8],
+    sync_hint: bool,
+  ) -> Result<(), WriteAllError<Self::WriteError>> {
+    let mut buf = input_buffer;
+    while !buf.is_empty() {
+      match self.write(buf, sync_hint) {
+        Ok(0) => {
+          return Err(WriteAllError::ZeroWrite {
+            bytes_written: input_buffer.len() - buf.len(),
+          });
+        },
+        Ok(n) => buf = &buf[n..], // advance buffer
+        Err(e) => return Err(WriteAllError::Io(e)),
+      }
     }
+    Ok(())
   }
-  Ok(())
 }

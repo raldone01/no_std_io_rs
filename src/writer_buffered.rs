@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 use thiserror::Error;
 
-use crate::no_std_io::{write_all, Write, WriteAllError};
+use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
 
 /// A buffered writer accumulates data until it reaches a certain size before writing it to the target writer.
 pub struct BufferedWriter<'a, W: Write> {
@@ -36,7 +36,9 @@ impl<'a, W: Write> BufferedWriter<'a, W> {
     if self.pos == 0 {
       return Ok(());
     }
-    write_all(self.target_writer, &self.buffer[..self.pos], sync_hint)?;
+    self
+      .target_writer
+      .write_all(&self.buffer[..self.pos], sync_hint)?;
     self.pos = 0;
     Ok(())
   }
@@ -57,7 +59,9 @@ impl<'a, W: Write> Write for BufferedWriter<'a, W> {
         .flush_buffer(sync_hint)
         .map_err(BufferedWriterWriteError::IoWrite)?;
       // Write the input buffer directly to the target writer
-      return write_all(self.target_writer, input_buffer, sync_hint)
+      return self
+        .target_writer
+        .write_all(input_buffer, sync_hint)
         .map(|_| input_buffer.len())
         .map_err(BufferedWriterWriteError::IoWrite);
     }
@@ -91,10 +95,7 @@ impl<'a, W: Write> Write for BufferedWriter<'a, W> {
 mod tests {
   use super::*;
 
-  use crate::{
-    writer_buffer::BufferWriter, writer_bytewise::BytewiseWriter,
-    writer_compressed::CompressedWriter,
-  };
+  use crate::{writer_buffer::BufferWriter, writer_bytewise::BytewiseWriter};
 
   #[test]
   fn test_buffered_writer_chunks_correctly_always_chunk() {
@@ -102,7 +103,8 @@ mod tests {
     let mut buffer_writer = BufferWriter::new(128);
     let mut bytewise_writer = BytewiseWriter::new(&mut buffer_writer);
     let mut buffered_writer = BufferedWriter::new(&mut bytewise_writer, 20, true);
-    write_all(&mut buffered_writer, input_data, false)
+    buffered_writer
+      .write_all(input_data, false)
       .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
     buffered_writer
       .flush()
@@ -116,9 +118,11 @@ mod tests {
     let input_data = b"Hello, world! This is a test of the BufferedWriter.";
     let mut buffer_writer = BufferWriter::new(128);
     let mut buffered_writer = BufferedWriter::new(&mut buffer_writer, 20, false);
-    write_all(&mut buffered_writer, &input_data[..30], false)
+    buffered_writer
+      .write_all(&input_data[..30], false)
       .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
-    write_all(&mut buffered_writer, &input_data[30..], false)
+    buffered_writer
+      .write_all(&input_data[30..], false)
       .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
     buffered_writer
       .flush()

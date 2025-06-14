@@ -9,7 +9,7 @@ use miniz_oxide::{
 };
 use thiserror::Error;
 
-use crate::no_std_io::{write_all, Write, WriteAllError};
+use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
 
 /// Don't forget to call `finish()` when done to finalize the compression and flush any remaining data.
 pub struct CompressedWriter<'a, W: Write> {
@@ -85,12 +85,10 @@ impl<'a, W: Write> CompressedWriter<'a, W> {
       Err(e) => return Err(CompressedWriteError::<W::WriteError, W::FlushError>::MZError(e)),
     };
     let sync_hint = flush != MZFlush::None;
-    write_all(
-      self.target_writer,
-      &self.tmp_buffer[..result.bytes_written],
-      sync_hint,
-    )
-    .map_err(CompressedWriteError::<W::WriteError, W::FlushError>::IoWrite)?;
+    self
+      .target_writer
+      .write_all(&self.tmp_buffer[..result.bytes_written], sync_hint)
+      .map_err(CompressedWriteError::<W::WriteError, W::FlushError>::IoWrite)?;
     Ok(result)
   }
 
@@ -141,7 +139,7 @@ impl<W: Write> Write for CompressedWriter<'_, W> {
 mod tests {
   use super::*;
 
-  use crate::{no_std_io::write_all, writer_buffer::BufferWriter, writer_bytewise::BytewiseWriter};
+  use crate::{writer_buffer::BufferWriter, writer_bytewise::BytewiseWriter};
 
   #[test]
   fn test_compressed_writer_buffer_size_dynamic_questionmark() {
@@ -156,7 +154,8 @@ mod tests {
     let mut bytewise_writer_after = BytewiseWriter::new(&mut buffer_writer);
     let mut compressed_writer = CompressedWriter::new(&mut bytewise_writer_after, 6, true, 1);
     let mut bytewise_writer_before = BytewiseWriter::new(&mut compressed_writer);
-    write_all(&mut bytewise_writer_before, uncompressed_data, false)
+    bytewise_writer_before
+      .write_all(uncompressed_data, false)
       .expect("Failed to write uncompressed data to compressed writer");
     bytewise_writer_before
       .flush()
@@ -181,7 +180,8 @@ mod tests {
 
     let mut buffer_writer = BufferWriter::new(128);
     let mut compressed_writer = CompressedWriter::new(&mut buffer_writer, 6, use_zlib, 128);
-    write_all(&mut compressed_writer, uncompressed_data, false)
+    compressed_writer
+      .write_all(uncompressed_data, false)
       .expect("Failed to write uncompressed data to compressed writer");
     // check if it can survive a flush
     compressed_writer
@@ -220,7 +220,8 @@ mod tests {
     let mut buffer_writer = BufferWriter::new(4096);
     let mut bytewise_writer = BytewiseWriter::new(&mut buffer_writer);
     let mut compressed_writer = CompressedWriter::new(&mut bytewise_writer, 6, true, 128);
-    write_all(&mut compressed_writer, uncompressed_data, false)
+    compressed_writer
+      .write_all(uncompressed_data, false)
       .expect("Failed to write uncompressed data to compressed writer");
     // check if it can survive a flush
     compressed_writer

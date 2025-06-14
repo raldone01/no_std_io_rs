@@ -166,37 +166,6 @@ impl<R: Read> TarReader<R> {
   }
 }
 
-pub(crate) fn strip_gzip_header(data: &[u8]) -> &[u8] {
-  let mut i = 10; // skip fixed header
-  let flg = data[3];
-
-  if flg & 0x04 != 0 {
-    // FEXTRA
-    let xlen = u16::from_le_bytes([data[i], data[i + 1]]) as usize;
-    i += 2 + xlen;
-  }
-  if flg & 0x08 != 0 {
-    // FNAME
-    while data[i] != 0 {
-      i += 1;
-    }
-    i += 1;
-  }
-  if flg & 0x10 != 0 {
-    // FCOMMENT
-    while data[i] != 0 {
-      i += 1;
-    }
-    i += 1;
-  }
-  if flg & 0x02 != 0 {
-    // FHCRC
-    i += 2;
-  }
-
-  &data[i..data.len() - 8] // exclude footer (CRC + ISIZE)
-}
-
 pub fn extract_tar_file(
   tar_gz_data: &[u8],
   max_extracted_bytes: usize,
