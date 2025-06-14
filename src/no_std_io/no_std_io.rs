@@ -35,7 +35,7 @@ pub trait Write {
 pub enum WriteAllError<U> {
   #[error("Underlying device wrote zero bytes after writing {bytes_written} bytes")]
   ZeroWrite { bytes_written: usize },
-  #[error("Underlying I/O error: {0:?}")]
+  #[error("Underlying write error: {0:?}")]
   Io(#[from] U),
 }
 

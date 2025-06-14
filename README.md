@@ -14,6 +14,12 @@ Features of this crate:
 * `gnu`
 * gen `ustar` tar
 * Add feature to opt in to time dependency.
+* Fix clippy lints
+
+# TODO (long term):
+* Add `alloc` feature
+* After maturing enough consider moving `no_std_io` to its own crate.
+* Add filesystem trait and filesystem agnostic file api. (Default ship a memory based implementation serialize to tar_gz and extract from tar_gz.)
 
 # TODO fever dreams:
 

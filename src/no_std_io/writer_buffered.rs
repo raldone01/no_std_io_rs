@@ -13,9 +13,9 @@ pub struct BufferedWriter<'a, W: Write> {
 
 #[derive(Error, Debug)]
 pub enum BufferedWriterWriteError<WWE, WFE> {
-  #[error("Underlying I/O error on write: {0:?}")]
+  #[error("Underlying write error: {0:?}")]
   IoWrite(WriteAllError<WWE>),
-  #[error("Underlying I/O error on flush: {0:?}")]
+  #[error("Underlying flush error: {0:?}")]
   IoFlush(WFE),
 }
 

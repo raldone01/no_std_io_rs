@@ -30,9 +30,9 @@ pub enum CompressedWriteError<WWE, WFE> {
   MZError(MZError),
   #[error("The writer is already finished and cannot accept more data")]
   Finished,
-  #[error("Underlying I/O error on write: {0:?}")]
+  #[error("Underlying write error: {0:?}")]
   IoWrite(WriteAllError<WWE>),
-  #[error("Underlying I/O error on flush: {0:?}")]
+  #[error("Underlying flush error: {0:?}")]
   IoFlush(WFE),
 }
 

@@ -43,7 +43,7 @@ pub enum CompressedReadError<U> {
   UnexpectedEof,
   #[error("Decompression error: {0:?}")]
   MZError(MZError),
-  #[error("Underlying I/O error: {0:?}")]
+  #[error("Underlying read error: {0:?}")]
   Io(#[from] U),
 }
 

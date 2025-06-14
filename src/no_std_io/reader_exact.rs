@@ -21,7 +21,7 @@ pub enum ReadExactError<U> {
   UnexpectedData,
   #[error("Memory limit of {0} bytes exceeded for exact read")]
   MemoryLimitExceeded(usize),
-  #[error("Underlying I/O error: {0:?}")]
+  #[error("Underlying read error: {0:?}")]
   Io(#[from] U),
 }
 
