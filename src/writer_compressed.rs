@@ -16,7 +16,6 @@ pub struct CompressedWriter<'a, W: Write> {
   compressor: CompressorOxide,
   target_writer: &'a mut W,
   finished: bool,
-  pending_flush: MZFlush,
   tmp_buffer: Vec<u8>,
 }
 
@@ -51,27 +50,7 @@ impl<'a, W: Write> CompressedWriter<'a, W> {
       compressor: CompressorOxide::new(flags),
       target_writer,
       finished: false,
-      pending_flush: MZFlush::None,
       tmp_buffer: vec![0_u8; tmp_buffer_size],
-    }
-  }
-
-  #[must_use]
-  fn strongest_flush(flush_a: MZFlush, flush_b: MZFlush) -> MZFlush {
-    use MZFlush::*;
-    // Order from weakest to strongest
-    if matches!((flush_a, flush_b), (Finish, _) | (_, Finish)) {
-      Finish
-    } else if matches!((flush_a, flush_b), (Full, _) | (_, Full)) {
-      Full
-    } else if matches!((flush_a, flush_b), (Sync, _) | (_, Sync)) {
-      Sync
-    } else if matches!((flush_a, flush_b), (Partial, _) | (_, Partial)) {
-      Partial
-    } else if matches!((flush_a, flush_b), (Block, _) | (_, Block)) {
-      Block
-    } else {
-      None
     }
   }
 
@@ -80,13 +59,11 @@ impl<'a, W: Write> CompressedWriter<'a, W> {
     input_buffer: &[u8],
     flush: MZFlush,
   ) -> Result<StreamResult, CompressedWriteError<W::WriteError, W::FlushError>> {
-    self.pending_flush = Self::strongest_flush(self.pending_flush, flush);
-
     let result = deflate(
       &mut self.compressor,
       input_buffer,
       self.tmp_buffer.as_mut_slice(),
-      self.pending_flush,
+      flush,
     );
     if result.bytes_consumed != input_buffer.len() {
       // The compressor did not consume all the bytes we read, which is unexpected.
@@ -107,14 +84,13 @@ impl<'a, W: Write> CompressedWriter<'a, W> {
       },
       Err(e) => return Err(CompressedWriteError::<W::WriteError, W::FlushError>::MZError(e)),
     };
-    let sync_hint = self.pending_flush != MZFlush::None;
+    let sync_hint = flush != MZFlush::None;
     write_all(
       self.target_writer,
       &self.tmp_buffer[..result.bytes_written],
       sync_hint,
     )
     .map_err(CompressedWriteError::<W::WriteError, W::FlushError>::IoWrite)?;
-    self.pending_flush = MZFlush::None;
     Ok(result)
   }
 
@@ -152,10 +128,7 @@ impl<W: Write> Write for CompressedWriter<'_, W> {
     if self.finished {
       return Err(CompressedWriteError::Finished);
     }
-    // We don't know why the following doesn't work.
     self.write_internal(&[], MZFlush::Sync)?;
-    // Instead, we queue a flush.
-    //self.pending_flush = Self::strongest_flush(self.pending_flush, MZFlush::Sync);
     self
       .target_writer
       .flush()
