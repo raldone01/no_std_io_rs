@@ -119,11 +119,11 @@ pub struct SymbolicLinkEntry {
 }
 
 pub struct CharacterDeviceEntry {
-  major: u32,
-  minor: u32,
+  pub major: u32,
+  pub minor: u32,
 }
 
 pub struct BlockDeviceEntry {
-  major: u32,
-  minor: u32,
+  pub major: u32,
+  pub minor: u32,
 }

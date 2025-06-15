@@ -60,10 +60,12 @@ pub enum TarTypeFlag {
   Directory,
   /// FIFO (named pipe)
   Fifo,
+  /// Indicates that this is a continuous file,
+  ContinuousFile,
   /// Extended header `pax`
-  ExtendedHeaderPrePax,
+  PaxExtendedHeader,
   /// Global extended header `pax`
-  GlobalExtendedHeaderPax,
+  PaxGlobalExtendedHeader,
   /// GNU extension - long file name
   LongNameGnu,
   /// GNU extension - long link name (link target)
@@ -83,9 +85,9 @@ impl From<u8> for TarTypeFlag {
       b'4' => TarTypeFlag::BlockDevice,
       b'5' => TarTypeFlag::Directory,
       b'6' => TarTypeFlag::Fifo,
-      b'7' => TarTypeFlag::RegularFile,
-      b'x' => TarTypeFlag::ExtendedHeaderPrePax,
-      b'g' => TarTypeFlag::GlobalExtendedHeaderPax,
+      b'7' => TarTypeFlag::ContinuousFile,
+      b'x' => TarTypeFlag::PaxExtendedHeader,
+      b'g' => TarTypeFlag::PaxGlobalExtendedHeader,
       b'L' => TarTypeFlag::LongNameGnu,
       b'K' => TarTypeFlag::LongLinkNameGnu,
       b'S' => TarTypeFlag::SparseOldGnu,
@@ -104,8 +106,9 @@ impl From<TarTypeFlag> for u8 {
       TarTypeFlag::BlockDevice => b'4',
       TarTypeFlag::Directory => b'5',
       TarTypeFlag::Fifo => b'6',
-      TarTypeFlag::ExtendedHeaderPrePax => b'x',
-      TarTypeFlag::GlobalExtendedHeaderPax => b'g',
+      TarTypeFlag::ContinuousFile => b'7',
+      TarTypeFlag::PaxExtendedHeader => b'x',
+      TarTypeFlag::PaxGlobalExtendedHeader => b'g',
       TarTypeFlag::LongNameGnu => b'L',
       TarTypeFlag::LongLinkNameGnu => b'K',
       TarTypeFlag::SparseOldGnu => b'S',
@@ -197,8 +200,8 @@ impl V7Header {
     parse_octal(&self.gid).map(|gid| gid as u32)
   }
 
-  pub fn parse_size(&self) -> Result<u64, ParseOctalError> {
-    parse_octal(&self.size)
+  pub fn parse_size(&self) -> Result<u32, ParseOctalError> {
+    parse_octal(&self.size).map(|size| size as u32)
   }
 
   pub fn parse_mtime(&self) -> Result<u64, ParseOctalError> {
@@ -280,11 +283,11 @@ impl CommonHeaderAdditions {
   pub fn parse_gname(&self) -> Result<&str, Utf8Error> {
     parse_null_terminated_string(&self.gname)
   }
-  pub fn parse_dev_major(&self) -> Result<u64, ParseOctalError> {
-    parse_octal(&self.dev_major)
+  pub fn parse_dev_major(&self) -> Result<u32, ParseOctalError> {
+    parse_octal(&self.dev_major).map(|v| v as u32)
   }
-  pub fn parse_dev_minor(&self) -> Result<u64, ParseOctalError> {
-    parse_octal(&self.dev_minor)
+  pub fn parse_dev_minor(&self) -> Result<u32, ParseOctalError> {
+    parse_octal(&self.dev_minor).map(|v| v as u32)
   }
 }
 
@@ -346,6 +349,7 @@ impl GnuHeaderAdditions {
     parse_octal(&self.longnames).map(|v| v as u32)
   }
 
+  #[must_use]
   pub fn parse_is_extended(&self) -> bool {
     self.is_extended[0] == b'1'
   }
@@ -393,6 +397,7 @@ pub struct GnuHeaderExtSparse {
 }
 
 impl GnuHeaderExtSparse {
+  #[must_use]
   pub fn parse_is_extended(&self) -> bool {
     self.is_extended[0] == b'1'
   }

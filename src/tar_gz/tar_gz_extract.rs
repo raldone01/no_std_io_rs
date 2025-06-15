@@ -1,3 +1,5 @@
+use core::str::Utf8Error;
+
 use alloc::{
   borrow::Cow,
   boxed::Box,
@@ -18,7 +20,10 @@ use crate::{
       CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse, GnuSparseInstruction,
       ParseOctalError, TarHeaderChecksumError, TarTypeFlag, UstarHeaderAdditions, V7Header,
     },
-    tar_inode::{FileEntry, FilePermissions, Permission, TarInode, TarInodeBuilder},
+    tar_inode::{
+      BlockDeviceEntry, CharacterDeviceEntry, FileEntry, FilePermissions, Permission, TarInode,
+      TarInodeBuilder,
+    },
   },
 };
 
@@ -168,7 +173,11 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
 
   let mut current_tar_inode = TarInodeBuilder::default();
 
+  let mut gnu_long_file_name = String::new();
+  let mut gnu_long_link_name = String::new();
+
   loop {
+    // header parsing variables
     let mut potential_path = None;
     let mut data_after_header = 0;
     let mut typeflag = TarTypeFlag::UnknownTypeFlag(255);
@@ -217,7 +226,7 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
           .gid
           .get_or_insert_with_maybe(|| old_header.parse_gid().ok());
         if let Ok(size) = old_header.parse_size() {
-          data_after_header = size;
+          data_after_header = size as usize;
         }
 
         current_tar_inode
@@ -253,6 +262,8 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
         Ok(())
       };
 
+      // This parses all fields in a header block regardless of the typeflag.
+      // There is some room for improving allocations/parsing based on the typeflag.
       match &old_header.magic_version {
         V7Header::MAGIC_VERSION_V7 => {
           parse_v7_header()?;
@@ -325,8 +336,48 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
     }
     // We parsed everything from the header block and released the buffer.
 
+    let mut gnu_parse_long_name = |output: &mut String,
+                                   context: &'static str|
+     -> Result<(), TarExtractionError<R::ReadExactError>> {
+      let long_file_name_bytes = reader
+        .read_exact(data_after_header)
+        .map_err(TarExtractionError::Io)?;
+      let long_file_name = str::from_utf8(long_file_name_bytes)
+        .map_err(|e| TarExtractionError::InvalidUtf8InFileName(context, e))?;
+      output.clear();
+      output.push_str(long_file_name);
+      Ok(())
+    };
+
     // now we match on the typeflag
     match typeflag {
+      TarTypeFlag::CharacterDevice => {
+        current_tar_inode.unparsed_extended_attributes =
+          pax_state.get_unparsed_extended_attributes();
+        current_tar_inode.entry = Some(FileEntry::CharacterDevice(CharacterDeviceEntry {
+          major: potential_dev_major.unwrap_or(0),
+          minor: potential_dev_minor.unwrap_or(0),
+        }));
+      },
+      TarTypeFlag::BlockDevice => {
+        current_tar_inode.unparsed_extended_attributes =
+          pax_state.get_unparsed_extended_attributes();
+        current_tar_inode.entry = Some(FileEntry::BlockDevice(BlockDeviceEntry {
+          major: potential_dev_major.unwrap_or(0),
+          minor: potential_dev_minor.unwrap_or(0),
+        }));
+      },
+      TarTypeFlag::Fifo => {
+        current_tar_inode.unparsed_extended_attributes =
+          pax_state.get_unparsed_extended_attributes();
+        current_tar_inode.entry = Some(FileEntry::Fifo);
+      },
+      TarTypeFlag::LongNameGnu => {
+        gnu_parse_long_name(&mut gnu_long_file_name, "GNU long file name")?;
+      },
+      TarTypeFlag::LongLinkNameGnu => {
+        gnu_parse_long_name(&mut gnu_long_link_name, "GNU long link name")?;
+      },
       TarTypeFlag::SparseOldGnu => {
         if old_gnu_sparse_is_extended {
           // We must read the next block to get more sparse headers.
@@ -340,11 +391,6 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
             }
           }
         }
-      },
-      TarTypeFlag::Fifo => {
-        current_tar_inode.unparsed_extended_attributes =
-          pax_state.get_unparsed_extended_attributes();
-        current_tar_inode.entry = Some(FileEntry::Fifo);
       },
       TarTypeFlag::UnknownTypeFlag(_) => {
         // we just skip the data_after_header bytes if we don't know the typeflag
@@ -362,8 +408,8 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
 
 #[derive(Error, Debug)]
 pub enum TarExtractionError<U> {
-  #[error("Invalid UTF-8 in file name: {0}")]
-  InvalidUtf8InFileName(#[from] core::str::Utf8Error),
+  #[error("Invalid UTF-8 in {0}: {1}")]
+  InvalidUtf8InFileName(&'static str, Utf8Error),
   #[error("Corrupt header: {0}")]
   CorruptHeaderChecksum(#[from] TarHeaderChecksumError),
   #[error("Corrupt header: Unknown magic or version {magic:?} {version:?}")]
