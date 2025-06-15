@@ -157,6 +157,7 @@ pub struct ParseSuccess {
 }
 
 /// todo make this into a read where the user can push bytes into it.
+/// Use an enum to indicate what is currently being parsed
 pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
   reader: &mut R,
   parse_options: &TarParseOptions,
@@ -336,17 +337,27 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
     }
     // We parsed everything from the header block and released the buffer.
 
+    let data_after_header_block_aligned = (data_after_header + 511) & !511; // align to next 512 byte block
+
     let mut gnu_parse_long_name = |output: &mut String,
                                    context: &'static str|
      -> Result<(), TarExtractionError<R::ReadExactError>> {
-      let long_file_name_bytes = reader
-        .read_exact(data_after_header)
-        .map_err(TarExtractionError::Io)?;
+      let long_file_name_bytes = &reader
+        .read_exact(data_after_header_block_aligned)
+        .map_err(TarExtractionError::Io)?[..data_after_header];
       let long_file_name = str::from_utf8(long_file_name_bytes)
         .map_err(|e| TarExtractionError::InvalidUtf8InFileName(context, e))?;
       output.clear();
       output.push_str(long_file_name);
       Ok(())
+    };
+
+    let mut parse_pax_data = |global: bool| -> Result<(), TarExtractionError<R::ReadExactError>> {
+      // We read the next block and parse the PAX data.
+      let pax_data_bytes = &reader
+        .read_exact(data_after_header_block_aligned)
+        .map_err(TarExtractionError::Io)?[..data_after_header];
+      todo!()
     };
 
     // now we match on the typeflag
@@ -372,6 +383,14 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
           pax_state.get_unparsed_extended_attributes();
         current_tar_inode.entry = Some(FileEntry::Fifo);
       },
+      TarTypeFlag::PaxExtendedHeader => {
+        // We read the next block and parse the PAX data.
+        parse_pax_data(false)?;
+      },
+      TarTypeFlag::PaxGlobalExtendedHeader => {
+        // We read the next block and parse the PAX data.
+        parse_pax_data(true)?;
+      },
       TarTypeFlag::LongNameGnu => {
         gnu_parse_long_name(&mut gnu_long_file_name, "GNU long file name")?;
       },
@@ -394,11 +413,14 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
       },
       TarTypeFlag::UnknownTypeFlag(_) => {
         // we just skip the data_after_header bytes if we don't know the typeflag
+        reader
+          .read_exact(data_after_header_block_aligned)
+          .map_err(TarExtractionError::Io)?;
       },
       _ => todo!(),
     }
 
-    // move reader ahead
+    // reset state here
 
     // todo: prefill next inode builder with pax global state
   }
