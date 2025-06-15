@@ -15,8 +15,8 @@ use crate::{
   tar_gz::{
     tar_constants::{
       pax_keys_well_known::gnu::{GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE},
-      CommonHeaderAdditions, GnuHeaderAdditions, TarHeaderChecksumError, TarTypeFlag,
-      UstarHeaderAdditions, V7Header,
+      CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse, GnuSparseInstruction,
+      ParseOctalError, TarHeaderChecksumError, TarTypeFlag, UstarHeaderAdditions, V7Header,
     },
     tar_inode::{FileEntry, FilePermissions, Permission, TarInode, TarInodeBuilder},
   },
@@ -25,6 +25,17 @@ use crate::{
 struct SparseFileInstruction {
   offset_before: u64,
   data_size: u64,
+}
+
+impl TryFrom<&GnuSparseInstruction> for SparseFileInstruction {
+  type Error = ParseOctalError;
+
+  fn try_from(value: &GnuSparseInstruction) -> Result<Self, Self::Error> {
+    Ok(Self {
+      offset_before: value.parse_offset()?,
+      data_size: value.parse_num_bytes()?,
+    })
+  }
 }
 
 /// "%d %s=%s\n", <length>, <keyword>, <value>
@@ -140,6 +151,7 @@ pub struct ParseSuccess {
   found_type_flags: HashMap<TarTypeFlag, usize>,
 }
 
+/// todo make this into a read where the user can push bytes into it.
 pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
   reader: &mut R,
   parse_options: &TarParseOptions,
@@ -157,104 +169,178 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
   let mut current_tar_inode = TarInodeBuilder::default();
 
   loop {
-    let header_buffer = reader.read_exact(512).map_err(TarExtractionError::Io)?;
-    let old_header =
-      V7Header::ref_from_bytes(&header_buffer).expect("BUG: Not enough bytes for OldHeader");
-
-    let mut potential_path_postfix = None;
+    let mut potential_path = None;
     let mut data_after_header = 0;
     let mut typeflag = TarTypeFlag::UnknownTypeFlag(255);
     let mut potential_linkname = None;
     let mut potential_dev_major = None;
     let mut potential_dev_minor = None;
+    let mut potential_sparse_instructions = Vec::<SparseFileInstruction>::new();
+    let mut potential_sparse_real_size = None;
+    let mut old_gnu_sparse_is_extended = false;
 
-    let mut parse_v7_header = || -> Result<(), TarExtractionError<R::ReadExactError>> {
-      // verify checksum
-      old_header
-        .verify_checksum()
-        .map_err(TarExtractionError::CorruptHeaderChecksum)?;
+    let mut old_gnu_sparse_parse_sparse_instructions =
+      |sparse_headers: &[GnuSparseInstruction]| {
+        for sparse_header in sparse_headers {
+          if sparse_header.is_empty() {
+            continue;
+          }
+          if let Ok(instruction) = SparseFileInstruction::try_from(sparse_header) {
+            potential_sparse_instructions.push(instruction);
+          } else {
+            // If we can't parse the sparse header, we just ignore it.
+            // This is a best-effort approach.
+          }
+        }
+      };
 
-      // parse the information from the old header
-      potential_path_postfix = old_header.parse_name().map(RelativePathBuf::from).ok();
-      current_tar_inode
-        .mode
-        .get_or_insert_with_maybe(|| old_header.parse_mode());
-      current_tar_inode
-        .uid
-        .get_or_insert_with_maybe(|| old_header.parse_uid().ok());
-      current_tar_inode
-        .gid
-        .get_or_insert_with_maybe(|| old_header.parse_gid().ok());
-      if let Ok(size) = old_header.parse_size() {
-        data_after_header = size;
-      }
+    {
+      let header_buffer = reader.read_exact(512).map_err(TarExtractionError::Io)?;
+      let old_header =
+        V7Header::ref_from_bytes(&header_buffer).expect("BUG: Not enough bytes for OldHeader");
 
-      current_tar_inode
-        .mtime
-        .get_or_insert_with_maybe(|| old_header.parse_mtime().ok());
+      let mut parse_v7_header = || -> Result<(), TarExtractionError<R::ReadExactError>> {
+        // verify checksum
+        old_header
+          .verify_checksum()
+          .map_err(TarExtractionError::CorruptHeaderChecksum)?;
 
-      typeflag = old_header.parse_typeflag();
-      if let Some(count) = found_type_flags.get_mut(&typeflag) {
-        *count += 1;
-      } else {
-        found_type_flags.insert(typeflag.clone(), 1);
-      }
+        // parse the information from the old header
+        potential_path = old_header.parse_name().map(RelativePathBuf::from).ok();
+        current_tar_inode
+          .mode
+          .get_or_insert_with_maybe(|| old_header.parse_mode());
+        current_tar_inode
+          .uid
+          .get_or_insert_with_maybe(|| old_header.parse_uid().ok());
+        current_tar_inode
+          .gid
+          .get_or_insert_with_maybe(|| old_header.parse_gid().ok());
+        if let Ok(size) = old_header.parse_size() {
+          data_after_header = size;
+        }
 
-      potential_linkname.get_or_insert_with_maybe(|| old_header.parse_linkname().ok());
+        current_tar_inode
+          .mtime
+          .get_or_insert_with_maybe(|| old_header.parse_mtime().ok());
 
-      Ok(())
-    };
+        typeflag = old_header.parse_typeflag();
+        if let Some(count) = found_type_flags.get_mut(&typeflag) {
+          *count += 1;
+        } else {
+          found_type_flags.insert(typeflag.clone(), 1);
+        }
 
-    let mut parse_common_header_additions = |common_header_additions: &CommonHeaderAdditions| -> Result<
-      (),
-      TarExtractionError<R::ReadExactError>,
-    > {
-      current_tar_inode
-        .uname
-        .get_or_insert_with_maybe(|| common_header_additions.parse_uname().ok().map(String::from));
-      current_tar_inode
-        .gname
-        .get_or_insert_with_maybe(|| common_header_additions.parse_gname().ok().map(String::from));
-      potential_dev_major
-        .get_or_insert_with_maybe(|| common_header_additions.parse_dev_major().ok());
-      potential_dev_minor
-        .get_or_insert_with_maybe(|| common_header_additions.parse_dev_minor().ok());
-      Ok(())
-    };
+        potential_linkname.get_or_insert_with_maybe(|| old_header.parse_linkname().ok());
 
-    match &old_header.magic_version {
-      V7Header::MAGIC_VERSION_V7 => {
-        parse_v7_header()?;
-      },
-      V7Header::MAGIC_VERSION_USTAR => {
-        parse_v7_header()?;
-        let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
-          .expect("BUG: Not enough bytes for CommonHeaderAdditions in USTAR");
-        parse_common_header_additions(common_header_additions)?;
-        let ustar_additions =
-          UstarHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
-            .expect("BUG: Not enough bytes for UstarHeaderAdditions");
-        todo!()
-      },
-      V7Header::MAGIC_VERSION_GNU => {
-        parse_v7_header()?;
-        let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
-          .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
-        parse_common_header_additions(common_header_additions)?;
-        let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
-          .expect("BUG: Not enough bytes for GnuHeaderAdditions");
-        todo!()
-      },
-      unknown_version_magic => {
-        return Err(TarExtractionError::CorruptHeaderMagicVersion {
-          magic: unknown_version_magic[..6].try_into().unwrap(),
-          version: unknown_version_magic[6..].try_into().unwrap(),
+        Ok(())
+      };
+
+      let mut parse_common_header_additions = |common_header_additions: &CommonHeaderAdditions| -> Result<
+        (),
+        TarExtractionError<R::ReadExactError>,
+      > {
+        current_tar_inode.uname.get_or_insert_with_maybe(|| {
+          common_header_additions.parse_uname().ok().map(String::from)
         });
-      },
+        current_tar_inode.gname.get_or_insert_with_maybe(|| {
+          common_header_additions.parse_gname().ok().map(String::from)
+        });
+        potential_dev_major
+          .get_or_insert_with_maybe(|| common_header_additions.parse_dev_major().ok());
+        potential_dev_minor
+          .get_or_insert_with_maybe(|| common_header_additions.parse_dev_minor().ok());
+        Ok(())
+      };
+
+      match &old_header.magic_version {
+        V7Header::MAGIC_VERSION_V7 => {
+          parse_v7_header()?;
+          // Done v7 header parsing.
+        },
+        V7Header::MAGIC_VERSION_USTAR => {
+          parse_v7_header()?;
+          let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
+            .expect("BUG: Not enough bytes for CommonHeaderAdditions in USTAR");
+          parse_common_header_additions(common_header_additions)?;
+          let ustar_additions =
+            UstarHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
+              .expect("BUG: Not enough bytes for UstarHeaderAdditions");
+
+          // if there is already a path we want to prefix it with the ustar additions
+          // if there is no path, we want to use the ustar prefix as the path
+          if let Some(path) = potential_path {
+            let prefix = ustar_additions.parse_prefix().ok().map(String::from);
+            if let Some(prefix) = prefix {
+              current_tar_inode
+                .path
+                .get_or_insert_with(|| RelativePathBuf::from(prefix).join(path));
+            } else {
+              current_tar_inode.path.get_or_insert(path);
+            }
+          } else {
+            current_tar_inode.path.get_or_insert_with_maybe(|| {
+              ustar_additions
+                .parse_prefix()
+                .ok()
+                .map(|prefix| RelativePathBuf::from(prefix))
+            });
+          }
+          // Done ustar header parsing.
+        },
+        V7Header::MAGIC_VERSION_GNU => {
+          parse_v7_header()?;
+          let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
+            .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
+          parse_common_header_additions(common_header_additions)?;
+          let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
+            .expect("BUG: Not enough bytes for GnuHeaderAdditions");
+
+          // We don't care about atime or ctime so we just use them if we could not parse mtime.
+          current_tar_inode.mtime.get_or_insert_with_maybe(|| {
+            gnu_additions
+              .parse_atime()
+              .ok()
+              .or_else(|| gnu_additions.parse_ctime().ok())
+          });
+
+          // Handle sparse entries (Old GNU Format)
+          if typeflag == TarTypeFlag::SparseOldGnu {
+            old_gnu_sparse_parse_sparse_instructions(&gnu_additions.sparse);
+            old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
+          }
+
+          potential_sparse_real_size
+            .get_or_insert_with_maybe(|| gnu_additions.parse_real_size().ok());
+
+          // Done GNU header parsing.
+        },
+        unknown_version_magic => {
+          return Err(TarExtractionError::CorruptHeaderMagicVersion {
+            magic: unknown_version_magic[..6].try_into().unwrap(),
+            version: unknown_version_magic[6..].try_into().unwrap(),
+          });
+        },
+      }
     }
+    // We parsed everything from the header block and released the buffer.
 
     // now we match on the typeflag
     match typeflag {
+      TarTypeFlag::SparseOldGnu => {
+        if old_gnu_sparse_is_extended {
+          // We must read the next block to get more sparse headers.
+          loop {
+            let extended_header_buffer = reader.read_exact(512).map_err(TarExtractionError::Io)?;
+            let extended_header = GnuHeaderExtSparse::ref_from_bytes(&extended_header_buffer)
+              .expect("BUG: Not enough bytes for GnuHeaderExtSparse");
+            old_gnu_sparse_parse_sparse_instructions(&extended_header.sparse);
+            if !extended_header.parse_is_extended() {
+              break;
+            }
+          }
+        }
+      },
       TarTypeFlag::Fifo => {
         current_tar_inode.unparsed_extended_attributes =
           pax_state.get_unparsed_extended_attributes();

@@ -69,7 +69,7 @@ pub enum TarTypeFlag {
   /// GNU extension - long link name (link target)
   LongLinkNameGnu,
   /// GNU extension - sparse file
-  SparseGnu,
+  SparseOldGnu,
   UnknownTypeFlag(u8),
 }
 
@@ -88,7 +88,7 @@ impl From<u8> for TarTypeFlag {
       b'g' => TarTypeFlag::GlobalExtendedHeaderPax,
       b'L' => TarTypeFlag::LongNameGnu,
       b'K' => TarTypeFlag::LongLinkNameGnu,
-      b'S' => TarTypeFlag::SparseGnu,
+      b'S' => TarTypeFlag::SparseOldGnu,
       _ => TarTypeFlag::UnknownTypeFlag(value),
     }
   }
@@ -108,7 +108,7 @@ impl From<TarTypeFlag> for u8 {
       TarTypeFlag::GlobalExtendedHeaderPax => b'g',
       TarTypeFlag::LongNameGnu => b'L',
       TarTypeFlag::LongLinkNameGnu => b'K',
-      TarTypeFlag::SparseGnu => b'S',
+      TarTypeFlag::SparseOldGnu => b'S',
       TarTypeFlag::UnknownTypeFlag(value) => value,
     }
   }
@@ -297,38 +297,105 @@ pub struct UstarHeaderAdditions {
   pub pad: [u8; 12],
 }
 
+impl UstarHeaderAdditions {
+  pub fn parse_prefix(&self) -> Result<&str, Utf8Error> {
+    parse_null_terminated_string(&self.prefix)
+  }
+}
+
 /// Fields contained in the padding of the [`CommonHeaderAdditions`].
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct GnuHeaderAdditions {
+  /// Access time in octal ASCII, null-terminated (12 bytes)
   pub atime: [u8; 12],
+  /// Creation time in octal ASCII, null-terminated (12 bytes)
   pub ctime: [u8; 12],
-  /// Only relevant for multi-volume archives.
-  /// It is the offset of the start of this volume.
+  /// Offset of the start of this volume in octal ASCII, null-terminated (12 bytes)
+  /// Used only for multi-volume tar archives
   pub offset: [u8; 12],
+  /// Offset to long name data, or 0 if not used (4 bytes)
   pub longnames: [u8; 4],
+  /// Reserved byte; always set to zero (1 byte)
   pub unused: [u8; 1],
-  pub sparse: [GnuSparseHeader; 4],
-  pub isextended: [u8; 1],
-  pub realsize: [u8; 12],
+  /// List of up to 4 sparse file entries
+  pub sparse: [GnuSparseInstruction; 4],
+  /// Flag indicating if there are more sparse entries in an extended header (1 byte)
+  /// '1' means more headers follow
+  pub is_extended: [u8; 1],
+  /// Actual size of the file before compression, in octal ASCII (12 bytes)
+  pub real_size: [u8; 12],
+  /// Unused padding bytes to fill the structure (17 bytes)
   pub padding: [u8; 17],
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+impl GnuHeaderAdditions {
+  pub fn parse_atime(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.atime)
+  }
+
+  pub fn parse_ctime(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.ctime)
+  }
+
+  pub fn parse_offset(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.offset)
+  }
+
+  pub fn parse_longnames(&self) -> Result<u32, ParseOctalError> {
+    parse_octal(&self.longnames).map(|v| v as u32)
+  }
+
+  pub fn parse_is_extended(&self) -> bool {
+    self.is_extended[0] == b'1'
+  }
+
+  pub fn parse_real_size(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.real_size)
+  }
+}
+
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, PartialEq, Eq)]
 #[repr(C)]
-pub struct GnuSparseHeader {
+pub struct GnuSparseInstruction {
   /// Offset of the beginning of the chunk.
   pub offset: [u8; 12],
   /// Size of the chunk.
   pub num_bytes: [u8; 12],
 }
 
+impl GnuSparseInstruction {
+  const ZERO_INSTRUCTION: GnuSparseInstruction = GnuSparseInstruction {
+    offset: [0; 12],
+    num_bytes: [0; 12],
+  };
+
+  pub fn parse_offset(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.offset)
+  }
+
+  pub fn parse_num_bytes(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.num_bytes)
+  }
+
+  #[must_use]
+  pub fn is_empty(&self) -> bool {
+    self == &Self::ZERO_INSTRUCTION
+  }
+}
+
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-pub struct GnuExtSparseHeader {
-  pub sparse: [GnuSparseHeader; 21],
-  pub isextended: [u8; 1],
+pub struct GnuHeaderExtSparse {
+  pub sparse: [GnuSparseInstruction; 21],
+  pub is_extended: [u8; 1],
   pub padding: [u8; 7],
+}
+
+impl GnuHeaderExtSparse {
+  pub fn parse_is_extended(&self) -> bool {
+    self.is_extended[0] == b'1'
+  }
 }
 
 /// https://www.open-std.org/jtc1/sc22/open/n4217.pdf
