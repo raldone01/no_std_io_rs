@@ -365,9 +365,15 @@ mod tests {
     // Read the first 5 bytes
     assert_eq!(forked_reader.read_exact(5).unwrap(), b"Hello");
 
-    let mut fokred_forked_reader = forked_reader.fork_reader();
+    let mut forked_forked_reader = forked_reader.fork_reader();
     // Peek the next 7 bytes without consuming them
-    assert_eq!(fokred_forked_reader.peek_exact(7).unwrap(), b", world");
+    assert_eq!(forked_forked_reader.peek_exact(7).unwrap(), b", world");
+
+    // Check that a forked reader works as a regular reader
+    let mut output_buffer = [0; 7];
+    let bytes_read = forked_forked_reader.read(&mut output_buffer).unwrap();
+    assert_eq!(&output_buffer[..bytes_read], b", world");
+    assert_eq!(bytes_read, 7);
 
     // Peek the next 7 bytes without consuming them
     assert_eq!(forked_reader.peek_exact(7).unwrap(), b", world");

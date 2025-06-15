@@ -1,6 +1,23 @@
+//! https://www.ietf.org/rfc/rfc1952.txt
+
 use thiserror::Error;
 
 use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
+
+const ID1: u8 = 0x1F;
+const ID2: u8 = 0x8B;
+const CM_DEFLATE: u8 = 0x08;
+const FLG_FTEXT: u8 = 1 << 0;
+const FLG_FHCRC: u8 = 1 << 1;
+const FLG_FEXTRA: u8 = 1 << 2;
+const FLG_FNAME: u8 = 1 << 3;
+const FLG_FCOMMENT: u8 = 1 << 4;
+// MTIME here
+const XFL_MAXIMUM_COMPRESSION: u8 = 2;
+const XFL_FASTEST_COMPRESSION: u8 = 4;
+const OS_UNIX: u8 = 3;
+
+// TODO: https://crates.io/crates/crc32fast writer/reader make them take &mut ref to an existing crc32fast::Hasher
 
 /// GzHeader represents the gzip header with only the MTIME field parsed.
 #[derive(Debug, Clone)]
@@ -25,6 +42,7 @@ pub enum GzHeaderError {
 }
 
 impl GzHeader {
+  // TODO: use reader
   /// Parse a GzHeader from a buffer slice.
   /// Returns `Ok((header_length, GzHeader))` if successful, otherwise `Err(GzHeaderError)`.
   pub fn parse(input_buffer: &[u8]) -> Result<(usize, GzHeader), GzHeaderError> {

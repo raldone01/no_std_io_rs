@@ -10,6 +10,21 @@ if [ ! -d "test-archive" ]; then
   exit 1
 fi
 
+# Define sparse file path
+sparse_output_file="test-archive/sparse_test_file.txt"
+
+# Create a 1 MB sparse file
+truncate -s 2M "$sparse_output_file"
+
+# Add "Test" at offset 0
+printf 'Test\n' | dd of="$sparse_output_file" bs=1 seek=0 conv=notrunc
+
+# Add "Test" at 1 KB offset
+printf 'Test\n' | dd of="$sparse_output_file" bs=1 seek=$((1 * 1024)) conv=notrunc
+
+# Add "Test" at 1 MB offset
+printf 'Test\n' | dd of="$sparse_output_file" bs=1 seek=$((1 * 1024 * 1024)) conv=notrunc
+
 # Create tar archives using common formats
 
 # POSIX.1-2001 pax format (recommended)

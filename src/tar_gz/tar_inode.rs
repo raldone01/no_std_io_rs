@@ -1,0 +1,129 @@
+use alloc::{string::String, vec::Vec};
+
+use hashbrown::HashMap;
+use relative_path::RelativePathBuf;
+
+#[derive(Default)]
+pub struct TarInodeBuilder {
+  pub path: Option<RelativePathBuf>,
+  pub entry: Option<FileEntry>,
+  pub mode: Option<FilePermissions>,
+  pub uid: Option<u32>,
+  pub gid: Option<u32>,
+  pub mtime: Option<u64>,
+  pub uname: Option<String>,
+  pub gname: Option<String>,
+  pub unparsed_extended_attributes: HashMap<String, String>,
+}
+
+pub struct TarInode {
+  pub path: RelativePathBuf,
+  pub entry: FileEntry,
+  pub mode: FilePermissions,
+  pub uid: u32,
+  pub gid: u32,
+  pub mtime: u64,
+  pub uname: String,
+  pub gname: String,
+  pub unparsed_extended_attributes: HashMap<String, String>,
+}
+
+/// Represents permissions for a single user class (owner, group, or other)
+pub struct Permission {
+  pub read: bool,
+  pub write: bool,
+  pub execute: bool,
+}
+
+/// Represents file permissions split into owner, group, and other
+pub struct FilePermissions {
+  pub owner: Permission,
+  pub group: Permission,
+  pub other: Permission,
+  pub set_uid: bool,
+  pub set_gid: bool,
+  pub sticky: bool,
+}
+
+impl FilePermissions {
+  /// Parses an octal ASCII string representing Unix file permissions as found in the `mode` field of a tar header.
+  /// The input is expected to be &[u8; 12].
+  pub fn parse_octal_ascii_unix_mode(octal_bytes: &[u8]) -> Option<Self> {
+    let mode_str = str::from_utf8(&octal_bytes).ok()?;
+    let mode = u32::from_str_radix(mode_str, 8).ok()?;
+
+    // Extract permission bits
+    let owner = Permission {
+      read: mode & 0o400 != 0,
+      write: mode & 0o200 != 0,
+      execute: mode & 0o100 != 0,
+    };
+    let group = Permission {
+      read: mode & 0o040 != 0,
+      write: mode & 0o020 != 0,
+      execute: mode & 0o010 != 0,
+    };
+    let other = Permission {
+      read: mode & 0o004 != 0,
+      write: mode & 0o002 != 0,
+      execute: mode & 0o001 != 0,
+    };
+
+    // Special permission bits
+    let set_uid = mode & 0o4000 != 0;
+    let set_gid = mode & 0o2000 != 0;
+    let sticky = mode & 0o1000 != 0;
+
+    Some(FilePermissions {
+      owner,
+      group,
+      other,
+      set_uid,
+      set_gid,
+      sticky,
+    })
+  }
+}
+
+pub enum FileEntry {
+  Regular(RegularFileEntry),
+  HardLink(HardLinkEntry),
+  SymbolicLink(SymbolicLinkEntry),
+  CharacterDevice(CharacterDeviceEntry),
+  BlockDevice(BlockDeviceEntry),
+  Directory,
+  Fifo,
+}
+
+pub struct SparseEntry {
+  pub offset_before: u64,
+  pub data: Vec<u8>,
+}
+
+pub enum FileData {
+  Regular(Vec<u8>),
+  Sparse(Vec<SparseEntry>),
+}
+
+pub struct RegularFileEntry {
+  continuous: bool,
+  data: FileData,
+}
+
+pub struct HardLinkEntry {
+  link_target: RelativePathBuf,
+}
+
+pub struct SymbolicLinkEntry {
+  link_target: RelativePathBuf,
+}
+
+pub struct CharacterDeviceEntry {
+  major: u32,
+  minor: u32,
+}
+
+pub struct BlockDeviceEntry {
+  major: u32,
+  minor: u32,
+}

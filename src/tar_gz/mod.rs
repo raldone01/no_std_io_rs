@@ -1,7 +1,7 @@
-mod file_entry;
-mod gz_header;
+mod gz_container;
 mod tar_constants;
 mod tar_gz_extract;
+mod tar_inode;
 
 //mod tar_gz_extract;
 //mod tar_gz_create;

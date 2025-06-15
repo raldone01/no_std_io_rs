@@ -16,6 +16,7 @@ Features of this crate:
 * Add feature to opt in to time dependency.
 * Fix clippy lints
 * Add `emscripten` feature to enable `no_std_io` compatibility.
+* gnu `sparse` files
 
 # TODO (long term):
 * After maturing enough consider moving `no_std_io` to its own crate.
@@ -25,4 +26,3 @@ Features of this crate:
 # TODO fever dreams:
 
 * Add `alloc` feature to enable `no_std` only mode. (Fever dream)
-* gnu `sparse` files
