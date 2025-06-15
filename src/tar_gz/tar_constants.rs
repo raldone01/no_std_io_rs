@@ -114,11 +114,12 @@ impl From<TarTypeFlag> for u8 {
   }
 }
 
-fn null_terminated_end(bytes: &[u8]) -> usize {
-  bytes
+fn parse_null_terminated_string(bytes: &[u8]) -> Result<&str, Utf8Error> {
+  let end = bytes
     .iter()
     .position(|&b| b == b'\0')
-    .unwrap_or(bytes.len())
+    .unwrap_or(bytes.len());
+  str::from_utf8(&bytes[..end])
 }
 
 #[derive(Error, Debug)]
@@ -131,15 +132,14 @@ pub enum ParseOctalError {
 
 /// Parses a null-terminated, space-padded octal number from a byte slice.
 fn parse_octal(bytes: &[u8]) -> Result<u64, ParseOctalError> {
-  let end = null_terminated_end(bytes);
-  let s = str::from_utf8(&bytes[..end]).map_err(|err| ParseOctalError::InvalidUtf8(err))?;
+  let s = parse_null_terminated_string(&bytes).map_err(|err| ParseOctalError::InvalidUtf8(err))?;
   u64::from_str_radix(s.trim(), 8).map_err(|err| ParseOctalError::ParseIntError(err))
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 /// Also known as `v7`
 #[repr(C)]
-pub struct OldHeader {
+pub struct V7Header {
   /// File name, null-terminated
   pub name_bytes: [u8; 100],
   /// File mode (octal), stored as ASCII bytes
@@ -168,11 +168,11 @@ pub struct OldHeader {
   /// However, we use [u8; 8] to simplify the structure.
   /// They are never used independently anyway.
   pub magic_version: [u8; 8],
-  /// UstarHeaderAdditions or GnuHeaderAdditions or just zeros.
+  /// [`CommonHeaderAdditions`] if `magic_version` matches or just zeros.
   pub padding: [u8; 247],
 }
 
-impl OldHeader {
+impl V7Header {
   /// Used by the old `v7` format.
   pub const MAGIC_VERSION_V7: &[u8; 8] = b"\0\0\0\0\0\0\0\0";
   /// Shared by `ustar`, `pax` and `posix` formats.
@@ -181,8 +181,7 @@ impl OldHeader {
   pub const MAGIC_VERSION_GNU: &[u8; 8] = b"ustar  \0";
 
   pub fn parse_name(&self) -> Result<&str, Utf8Error> {
-    let end = null_terminated_end(&self.name_bytes);
-    str::from_utf8(&self.name_bytes[..end])
+    parse_null_terminated_string(&self.name_bytes)
   }
 
   #[must_use]
@@ -246,8 +245,7 @@ impl OldHeader {
   }
 
   pub fn parse_linkname(&self) -> Result<&str, Utf8Error> {
-    let end = null_terminated_end(&self.linkname);
-    str::from_utf8(&self.linkname[..end])
+    parse_null_terminated_string(&self.linkname)
   }
 }
 
@@ -259,10 +257,10 @@ pub enum TarHeaderChecksumError {
   ParseOctalError(#[from] ParseOctalError),
 }
 
+/// Fields contained in the padding of the [`V7Header`].
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-pub struct UstarHeaderAdditions {
-  // Fields following the version field of the OldHeader
+pub struct CommonHeaderAdditions {
   /// User name, null-terminated
   pub uname: [u8; 32],
   /// Group name, null-terminated
@@ -271,23 +269,38 @@ pub struct UstarHeaderAdditions {
   pub dev_major: [u8; 8],
   /// Minor device number (octal), stored as ASCII bytes
   pub dev_minor: [u8; 8],
+  /// [`UstarHeaderAdditions`] or [`GnuHeaderAdditions`].
+  pub padding: [u8; 167],
+}
+
+impl CommonHeaderAdditions {
+  pub fn parse_uname(&self) -> Result<&str, Utf8Error> {
+    parse_null_terminated_string(&self.uname)
+  }
+  pub fn parse_gname(&self) -> Result<&str, Utf8Error> {
+    parse_null_terminated_string(&self.gname)
+  }
+  pub fn parse_dev_major(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.dev_major)
+  }
+  pub fn parse_dev_minor(&self) -> Result<u64, ParseOctalError> {
+    parse_octal(&self.dev_minor)
+  }
+}
+
+/// Fields contained in the padding of the [`CommonHeaderAdditions`].
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct UstarHeaderAdditions {
   /// Path prefix used if name exceeds 100 bytes, null-terminated
   pub prefix: [u8; 155],
   pub pad: [u8; 12],
 }
 
+/// Fields contained in the padding of the [`CommonHeaderAdditions`].
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct GnuHeaderAdditions {
-  // Fields following the version field of the OldHeader
-  /// User name, null-terminated
-  pub uname: [u8; 32],
-  /// Group name, null-terminated
-  pub gname: [u8; 32],
-  /// Major device number (octal), stored as ASCII bytes
-  pub dev_major: [u8; 8],
-  /// Minor device number (octal), stored as ASCII bytes
-  pub dev_minor: [u8; 8],
   pub atime: [u8; 12],
   pub ctime: [u8; 12],
   /// Only relevant for multi-volume archives.
@@ -298,7 +311,7 @@ pub struct GnuHeaderAdditions {
   pub sparse: [GnuSparseHeader; 4],
   pub isextended: [u8; 1],
   pub realsize: [u8; 12],
-  pub pad: [u8; 17],
+  pub padding: [u8; 17],
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
