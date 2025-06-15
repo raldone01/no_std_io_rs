@@ -1,6 +1,8 @@
 #!/bin/bash
 # Pack the folder 'test-archive' into a tarball using multiple tar formats and GNU sparse variants
 
+# TODO: generate folder `test-archive/special_files/` that is ignored by git and tests long file names, long links, hardlinks, symlinks, fifos, blockdevices, character devices,
+
 # Change directory to the location of this script
 cd "$(dirname "$0")"
 

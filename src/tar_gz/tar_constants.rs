@@ -44,7 +44,7 @@ pub const TAR_ZERO_HEADER: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
 /// ## RARE:
 ///
 /// - `X` for solaris extended header (pre-pax)
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Clone)]
 pub enum TarTypeFlag {
   /// Regular file
   RegularFile,
@@ -324,7 +324,7 @@ pub struct GnuExtSparseHeader {
 /// # PaxTime:
 /// A dot is used for fractional seconds, e.g. `123456789.123456789`
 /// Represented as decimal.
-mod pax_keys_well_known {
+pub mod pax_keys_well_known {
   /// GNU sparse: https://www.gnu.org/software/tar/manual/html_section/Sparse-Formats.html
   ///
   /// For version 1.0 the sparse map is stored in the data section of the file.
@@ -332,59 +332,59 @@ mod pax_keys_well_known {
   /// The first number gives the number of maps in the file.
   /// Each map is a pair of numbers: the offset in the file and the size of the data at that offset.
   /// The map is padded to the next 512 byte block boundary.
-  mod gnu {
+  pub mod gnu {
     /// Overrides the `name` field of the header. (0.0, 0.1, 1.0)
-    const GNU_SPARSE_NAME: &str = "GNU.sparse.name";
+    pub const GNU_SPARSE_NAME: &str = "GNU.sparse.name";
     /// Overrides the real size of the file. (1.0)
-    const GNU_SPARSE_REALSIZE: &str = "GNU.sparse.realsize";
+    pub const GNU_SPARSE_REALSIZE: &str = "GNU.sparse.realsize";
     /// Version 1.0 this is the 1
-    const GNU_SPARSE_MAJOR: &str = "GNU.sparse.major";
+    pub const GNU_SPARSE_MAJOR: &str = "GNU.sparse.major";
     /// Version 1.0 this is the 0
-    const GNU_SPARSE_MINOR: &str = "GNU.sparse.minor";
+    pub const GNU_SPARSE_MINOR: &str = "GNU.sparse.minor";
 
     /// Overrides the real size of the file for old GNU sparse files. (0.0, 0.1)
-    const GNU_SPARSE_REALSIZE_OLD: &str = "GNU.sparse.size";
+    pub const GNU_SPARSE_REALSIZE_OLD: &str = "GNU.sparse.size";
     /// Number of blocks in the sparse map. (0.0, 0.1)
     /// After that the following fields are repeated numblocks times:
     /// * GNU_SPARSE_DATA_BLOCK_OFFSET
     /// * GNU_SPARSE_DATA_BLOCK_SIZE
-    const GNU_SPARSE_MAP_NUM_BLOCKS: &str = "GNU.sparse.numblocks";
+    pub const GNU_SPARSE_MAP_NUM_BLOCKS: &str = "GNU.sparse.numblocks";
     /// Offset of the data block. (0.0, 0.1)
-    const GNU_SPARSE_DATA_BLOCK_OFFSET: &str = "GNU.sparse.offset";
+    pub const GNU_SPARSE_DATA_BLOCK_OFFSET: &str = "GNU.sparse.offset";
     /// Size of the data block. (0.0, 0.1)
-    const GNU_SPARSE_DATA_BLOCK_SIZE: &str = "GNU.sparse.numbytes";
+    pub const GNU_SPARSE_DATA_BLOCK_SIZE: &str = "GNU.sparse.numbytes";
     /// The sparse map is a series of comma-separated values
     /// in the format `offset,size[,offset:size,...]`
-    const GNU_SPARSE_MAP: &str = "GNU.sparse.map";
+    pub const GNU_SPARSE_MAP: &str = "GNU.sparse.map";
   }
-  const ATIME: &str = "atime";
-  const CHARSET: &str = "charset";
-  const COMMENT: &str = "comment";
+  pub const ATIME: &str = "atime";
+  pub const CHARSET: &str = "charset";
+  pub const COMMENT: &str = "comment";
   /// Overrides the gid for files whose id is greater than `2 097 151 (octal 7 777 777)`.
   ///
   /// Stored in decimal format.
-  const GID: &str = "gid";
+  pub const GID: &str = "gid";
   /// Overrides the `gname` field of the header.
-  const GNAME: &str = "gname";
+  pub const GNAME: &str = "gname";
   /// Stores the charset used to encode `gname`, `linkname`, `path`, `uname` in the extended header.
   ///
   /// Standardized values: ISO-IR∆10646∆2000∆UTF-8
   ///
   /// BINARY might be anything?
-  const HDRCHARSET: &str = "hdrcharset";
+  pub const HDRCHARSET: &str = "hdrcharset";
   /// Overrides the linkname of the header.
-  const LINKPATH: &str = "linkpath";
-  const MTIME: &str = "mtime";
+  pub const LINKPATH: &str = "linkpath";
+  pub const MTIME: &str = "mtime";
   /// Overrides the `name` and `prefix` fields of the header.
-  const PATH: &str = "path";
+  pub const PATH: &str = "path";
   /// Overrides the size of the header.
   /// Size of the file in bytes, decimal format.
   /// When size greater than `8 589 934 591 (octal 77 777 777 777)`.
-  const SIZE: &str = "size";
+  pub const SIZE: &str = "size";
   /// Overrides the uid for files whose id is greater than `2 097 151 (octal 7 777 777)`.
   ///
   /// Stored in decimal format.
-  const UID: &str = "uid";
+  pub const UID: &str = "uid";
   /// Overrides the `uname` field of the header.
-  const UNAME: &str = "uname";
+  pub const UNAME: &str = "uname";
 }

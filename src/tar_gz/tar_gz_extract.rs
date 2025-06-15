@@ -1,4 +1,9 @@
-use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
+use alloc::{
+  borrow::Cow,
+  boxed::Box,
+  string::{String, ToString},
+  vec::Vec,
+};
 
 use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
@@ -9,9 +14,10 @@ use crate::{
   no_std_io::{BufferedReader, IBufferedReader, Read},
   tar_gz::{
     tar_constants::{
+      pax_keys_well_known::gnu::{GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE},
       GnuHeaderAdditions, OldHeader, TarHeaderChecksumError, TarTypeFlag, UstarHeaderAdditions,
     },
-    tar_inode::{FilePermissions, Permission, TarInode, TarInodeBuilder},
+    tar_inode::{FileEntry, FilePermissions, Permission, TarInode, TarInodeBuilder},
   },
 };
 
@@ -22,35 +28,62 @@ struct SparseFileInstruction {
 
 /// "%d %s=%s\n", <length>, <keyword>, <value>
 struct PaxState {
+  /// We don't support GNU sparse file attributes in global pax attributes.
   global_extended_attributes: HashMap<String, String>,
   /// GNU tar violated the POSIX standard by using repeated keywords.
   /// So we don't use a `HashMap` here.
   attributes: Vec<(String, String)>,
+  parsed_attributes: HashMap<String, ()>,
 }
 
 impl PaxState {
-  #[must_use]
-  fn new(initial_global_extended_attributes: Option<HashMap<String, String>>) -> Self {
-    Self {
-      global_extended_attributes: initial_global_extended_attributes.unwrap_or_else(HashMap::new),
-      attributes: Vec::new(),
+  fn preload_parsed_attributes(&mut self) {
+    // Since these attributes are completely broken anyway, we don't want the user to ever see them.
+    const ALWAYS_PARSED_ATTRIBUTES: &[&str] =
+      &[GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE];
+    for key in ALWAYS_PARSED_ATTRIBUTES {
+      self.parsed_attributes.insert(key.to_string(), ());
     }
   }
 
-  fn reset(&mut self) {
-    self.attributes.clear();
+  #[must_use]
+  fn new(initial_global_extended_attributes: HashMap<String, String>) -> Self {
+    let mut selv = Self {
+      global_extended_attributes: initial_global_extended_attributes,
+      attributes: Vec::new(),
+      parsed_attributes: HashMap::new(),
+    };
+    selv.preload_parsed_attributes();
+    selv
   }
 
-  fn get_attribute(&self, key: &str) -> Option<&String> {
+  fn reset_local(&mut self) {
+    self.attributes.clear();
+    self.parsed_attributes.clear();
+    self.preload_parsed_attributes();
+  }
+
+  fn get_attribute(&mut self, key: &str) -> Option<&String> {
+    if self.parsed_attributes.get(key).is_none() {
+      // TODO: interning the key would be more efficient
+      self.parsed_attributes.insert(key.to_string(), ());
+    }
     let local_attr = self
       .attributes
       .iter()
+      .rev()
       .find_map(|(k, v)| if k == key { Some(v) } else { None });
     local_attr.or_else(|| self.global_extended_attributes.get(key))
   }
 
-  fn get_local_attributes(&self) -> &[(String, String)] {
-    &self.attributes
+  fn get_unparsed_extended_attributes(&mut self) -> HashMap<String, String> {
+    let mut unparsed = HashMap::new();
+    for (key, value) in &self.attributes {
+      if !self.parsed_attributes.contains_key(key) {
+        unparsed.insert(key.clone(), value.clone());
+      }
+    }
+    unparsed
   }
 }
 
@@ -95,9 +128,7 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
   let mut seen_files = HashMap::<RelativePathBuf, usize>::new();
   let mut found_type_flags = HashMap::<TarTypeFlag, usize>::new();
 
-  let mut pax_state = PaxState::new(Some(
-    parse_options.initial_global_extended_attributes.clone(),
-  ));
+  let mut pax_state = PaxState::new(parse_options.initial_global_extended_attributes.clone());
 
   let mut current_tar_inode = TarInodeBuilder::default();
 
@@ -110,7 +141,10 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
     let mut typeflag = TarTypeFlag::UnknownTypeFlag(255);
     let mut potential_linkname = None;
 
-    let parse_v7_header = || -> Result<(), TarExtractionError<R::ReadExactError>> {
+    let data_after_header_ref = &mut data_after_header;
+    let typeflag_ref = &mut typeflag;
+    let potential_linkname_ref = &mut potential_linkname;
+    let mut parse_v7_header = || -> Result<(), TarExtractionError<R::ReadExactError>> {
       // verify checksum
       old_header
         .verify_checksum()
@@ -131,19 +165,19 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
         current_tar_inode.gid = current_tar_inode.gid.or(old_header.parse_gid().ok());
       }
       if let Ok(size) = old_header.parse_size() {
-        data_after_header = size;
+        *data_after_header_ref = size;
       }
       if current_tar_inode.mtime.is_none() {
         current_tar_inode.mtime = current_tar_inode.mtime.or(old_header.parse_mtime().ok());
       }
-      typeflag = old_header.parse_typeflag();
-      if let Some(count) = found_type_flags.get_mut(&typeflag) {
+      *typeflag_ref = old_header.parse_typeflag();
+      if let Some(count) = found_type_flags.get_mut(typeflag_ref) {
         *count += 1;
       } else {
-        found_type_flags.insert(typeflag, 1);
+        found_type_flags.insert(typeflag_ref.clone(), 1);
       }
 
-      potential_linkname = old_header.parse_linkname().ok();
+      *potential_linkname_ref = old_header.parse_linkname().ok();
 
       Ok(())
     };
@@ -172,7 +206,20 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
       },
     }
 
-    // NOW WE MATCH ON THE TYPEFLAG
+    // now we match on the typeflag
+    match typeflag {
+      TarTypeFlag::Fifo => {
+        current_tar_inode.unparsed_extended_attributes =
+          pax_state.get_unparsed_extended_attributes();
+        current_tar_inode.entry = Some(FileEntry::Fifo);
+      },
+      TarTypeFlag::UnknownTypeFlag(_) => {
+        // we just skip the data_after_header bytes if we don't know the typeflag
+      },
+      _ => todo!(),
+    }
+
+    // move reader ahead
 
     // todo: prefill next inode builder with pax global state
   }
