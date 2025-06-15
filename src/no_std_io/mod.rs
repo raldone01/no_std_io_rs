@@ -10,6 +10,7 @@ mod writer_bytewise;
 mod writer_compressed;
 mod writer_limited;
 mod writer_null;
+mod writer_slice;
 
 pub use no_std_io::*;
 pub use reader_buffered::*;
@@ -23,3 +24,4 @@ pub use writer_bytewise::*;
 pub use writer_compressed::*;
 pub use writer_limited::*;
 pub use writer_null::*;
+pub use writer_slice::*;
