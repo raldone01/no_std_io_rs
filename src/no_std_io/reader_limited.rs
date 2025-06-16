@@ -4,6 +4,8 @@ use crate::no_std_io::Read;
 
 /// A reader that only reads up to a specified limit.
 /// This is useful when handling user input to prevent resource exhaustion attacks.
+///
+/// This is the equivalent of `std::io::Read::take`.
 pub struct LimitedReader<'a, R: Read + ?Sized> {
   source_reader: &'a mut R,
   read_limit_bytes: usize,

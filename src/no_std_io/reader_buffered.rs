@@ -7,7 +7,12 @@ use thiserror::Error;
 
 use crate::no_std_io::Read;
 
-pub trait IBufferedReader<'backing>: Read {
+/// An interface for buffered readers.
+///
+/// It allows forking and reading/peeking exact sized chunks from an underlying reader.
+///
+/// This is the equivalent of `std::io::BufReader`.
+pub trait BufferedRead<'backing>: Read {
   type ReadExactError;
   type BackingImplementation: Read + ?Sized;
 
@@ -22,7 +27,10 @@ pub trait IBufferedReader<'backing>: Read {
   fn peek_exact(&mut self, byte_count: usize) -> Result<&[u8], Self::ReadExactError>;
 }
 
-/// A buffered reader that allows pulling exact sized chunks from an underlying reader.
+/// A buffered reader can be used to add buffering to any reader.
+/// It also that allows pulling exact sized chunks from an underlying reader.
+///
+/// To be generic over any buffered reader implementation, consider being generic over the [`BufferedRead`] trait instead.
 pub struct BufferedReader<'backing, R: Read + ?Sized> {
   source: &'backing mut R,
   buffer: Vec<u8>,
@@ -109,7 +117,7 @@ impl<'backing, R: Read + ?Sized> BufferedReader<'backing, R> {
   }
 }
 
-impl<'backing, R: Read + ?Sized> IBufferedReader<'backing> for BufferedReader<'backing, R> {
+impl<'backing, R: Read + ?Sized> BufferedRead<'backing> for BufferedReader<'backing, R> {
   type ReadExactError = BufferedReaderReadError<R::ReadError>;
   type BackingImplementation = R;
 
@@ -178,6 +186,7 @@ impl<R: Read + ?Sized> Read for BufferedReader<'_, R> {
   }
 }
 
+/// See [`BufferedRead`] for more details.
 pub struct ForkedBufferedReader<'a, 'backing, R: Read + ?Sized> {
   buffered_reader: &'a mut BufferedReader<'backing, R>,
   position: usize,
@@ -201,7 +210,7 @@ impl<'a, 'backing, R: Read + ?Sized> ForkedBufferedReader<'a, 'backing, R> {
   }
 }
 
-impl<'a, 'backing, R: Read + ?Sized> IBufferedReader<'backing>
+impl<'a, 'backing, R: Read + ?Sized> BufferedRead<'backing>
   for ForkedBufferedReader<'a, 'backing, R>
 {
   type ReadExactError = BufferedReaderReadError<R::ReadError>;

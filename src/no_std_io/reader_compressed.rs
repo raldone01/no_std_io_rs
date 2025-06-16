@@ -100,7 +100,7 @@ impl<R: Read + ?Sized> Read for CompressedReader<'_, R> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BufferedReader, BytewiseReader, IBufferedReader as _, SliceReader};
+  use crate::no_std_io::{BufferedRead as _, BufferedReader, BytewiseReader, SliceReader};
 
   fn test_compressed_reader_simple_read(use_zlib: bool) {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";

@@ -3,6 +3,8 @@ use core::convert::Infallible;
 use crate::no_std_io::Read;
 
 /// A reader that reads data from a byte slice.
+///
+/// This is the equivalent of `std::io::BorrowedCursor`.
 pub struct SliceReader<'a> {
   source: &'a [u8],
 }

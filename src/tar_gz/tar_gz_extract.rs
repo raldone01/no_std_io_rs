@@ -13,7 +13,7 @@ use thiserror::Error;
 use zerocopy::FromBytes;
 
 use crate::{
-  no_std_io::{BufferedReader, IBufferedReader, Read},
+  no_std_io::{BufferedRead, BufferedReader, Read},
   tar_gz::{
     tar_constants::{
       pax_keys_well_known::gnu::{GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE},
@@ -158,7 +158,7 @@ pub struct ParseSuccess {
 
 /// todo make this into a read where the user can push bytes into it.
 /// Use an enum to indicate what is currently being parsed
-pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
+pub fn parse_tar_file<'a, R: BufferedRead<'a>>(
   reader: &mut R,
   parse_options: &TarParseOptions,
 ) -> Result<Vec<TarInode>, TarExtractionError<R::ReadExactError>> {
@@ -352,13 +352,13 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
       Ok(())
     };
 
-    let mut parse_pax_data = |global: bool| -> Result<(), TarExtractionError<R::ReadExactError>> {
+    /*let mut parse_pax_data = |global: bool| -> Result<(), TarExtractionError<R::ReadExactError>> {
       // We read the next block and parse the PAX data.
       let pax_data_bytes = &reader
         .read_exact(data_after_header_block_aligned)
         .map_err(TarExtractionError::Io)?[..data_after_header];
       todo!()
-    };
+    };*/
 
     // now we match on the typeflag
     match typeflag {
@@ -383,14 +383,14 @@ pub fn parse_tar_file<'a, R: IBufferedReader<'a>>(
           pax_state.get_unparsed_extended_attributes();
         current_tar_inode.entry = Some(FileEntry::Fifo);
       },
-      TarTypeFlag::PaxExtendedHeader => {
+      /*TarTypeFlag::PaxExtendedHeader => {
         // We read the next block and parse the PAX data.
         parse_pax_data(false)?;
       },
       TarTypeFlag::PaxGlobalExtendedHeader => {
         // We read the next block and parse the PAX data.
         parse_pax_data(true)?;
-      },
+      },*/
       TarTypeFlag::LongNameGnu => {
         gnu_parse_long_name(&mut gnu_long_file_name, "GNU long file name")?;
       },
