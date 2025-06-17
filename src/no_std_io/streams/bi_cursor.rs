@@ -1,18 +1,19 @@
 use core::convert::Infallible;
 
+use thiserror::Error;
+
 use crate::no_std_io::{
-  BackingBufferMut, BufferedRead, CursorSeekError, ForkedBufferedReader, Read, ReadExactError,
-  Seek, SeekFrom,
+  BackingBufferMut, BufferedRead, ForkedBufferedReader, Read, ReadExactError, Seek, SeekFrom, Write,
 };
 
-pub struct Cursor<'a, B: ?Sized> {
-  backing_buffer: &'a B,
+pub struct Cursor<B> {
+  backing_buffer: B,
   position: usize,
 }
 
-impl<'a, B: ?Sized> Cursor<'a, B> {
+impl<B> Cursor<B> {
   #[must_use]
-  pub fn new(backing_buffer: &'a B) -> Self {
+  pub fn new(backing_buffer: B) -> Self {
     Self {
       backing_buffer,
       position: 0,
@@ -29,7 +30,7 @@ impl<'a, B: ?Sized> Cursor<'a, B> {
   }
 }
 
-impl<B: AsRef<[u8]> + ?Sized> Cursor<'_, B> {
+impl<B: AsRef<[u8]>> Cursor<B> {
   #[must_use]
   pub fn len(&self) -> usize {
     self.backing_buffer.as_ref().len()
@@ -46,14 +47,19 @@ impl<B: AsRef<[u8]> + ?Sized> Cursor<'_, B> {
   }
 }
 
-impl<B: BackingBufferMut + ?Sized> Cursor<'_, B> {
+impl<B: BackingBufferMut> Cursor<B> {
   #[must_use]
   pub fn backing_buffer(&self) -> &B {
-    self.backing_buffer
+    &self.backing_buffer
+  }
+
+  #[must_use]
+  pub fn backing_buffer_mut(&mut self) -> &mut B {
+    &mut self.backing_buffer
   }
 }
 
-impl<B: AsRef<[u8]> + ?Sized> Cursor<'_, B> {
+impl<B: AsRef<[u8]>> Cursor<B> {
   pub fn split(&self) -> (&[u8], &[u8]) {
     let slice = self.backing_buffer.as_ref();
     let position = self.position.min(slice.len());
@@ -61,7 +67,17 @@ impl<B: AsRef<[u8]> + ?Sized> Cursor<'_, B> {
   }
 }
 
-impl<B: AsRef<[u8]>> Seek for Cursor<'_, B> {
+#[derive(Error, Debug)]
+pub enum CursorSeekError {
+  #[error("Seek {offset:?} out of bounds: position {position}, length {length}")]
+  OutOfBounds {
+    position: usize,
+    length: usize,
+    offset: SeekFrom,
+  },
+}
+
+impl<B: AsRef<[u8]>> Seek for Cursor<B> {
   type SeekError = CursorSeekError;
 
   fn seek(&mut self, style: SeekFrom) -> Result<usize, Self::SeekError> {
@@ -93,7 +109,7 @@ impl<B: AsRef<[u8]>> Seek for Cursor<'_, B> {
   }
 }
 
-impl<B: AsRef<[u8]> + ?Sized> Read for Cursor<'_, B> {
+impl<B: AsRef<[u8]>> Read for Cursor<B> {
   type ReadError = Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -103,7 +119,7 @@ impl<B: AsRef<[u8]> + ?Sized> Read for Cursor<'_, B> {
   }
 }
 
-impl<B: AsRef<[u8]> + ?Sized> Cursor<'_, B> {
+impl<B: AsRef<[u8]>> Cursor<B> {
   fn read_exact_internal(
     &mut self,
     byte_count: usize,
@@ -137,7 +153,7 @@ impl<B: AsRef<[u8]> + ?Sized> Cursor<'_, B> {
   }
 }
 
-impl<B: AsRef<[u8]> + ?Sized> BufferedRead for Cursor<'_, B> {
+impl<B: AsRef<[u8]>> BufferedRead for Cursor<B> {
   type BackingImplementation = Self;
 
   fn fork_reader(&mut self) -> ForkedBufferedReader<'_, Self::BackingImplementation> {
@@ -171,9 +187,48 @@ impl<B: AsRef<[u8]> + ?Sized> BufferedRead for Cursor<'_, B> {
   }
 }
 
-impl<B: AsRef<[u8]> + ?Sized> AsRef<[u8]> for Cursor<'_, B> {
+impl<B: BackingBufferMut> BackingBufferMut for Cursor<B> {
+  type ResizeError = B::ResizeError;
+
+  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
+    self.backing_buffer.try_resize(new_size)?;
+    Ok(new_size)
+  }
+}
+
+impl<B: AsRef<[u8]>> AsRef<[u8]> for Cursor<B> {
   fn as_ref(&self) -> &[u8] {
     self.backing_buffer.as_ref()
+  }
+}
+
+impl<B: AsMut<[u8]>> AsMut<[u8]> for Cursor<B> {
+  fn as_mut(&mut self) -> &mut [u8] {
+    self.backing_buffer.as_mut()
+  }
+}
+
+impl<B: BackingBufferMut> Write for Cursor<B> {
+  type WriteError = B::ResizeError;
+  type FlushError = Infallible;
+
+  fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
+    let end_pos = self.position.saturating_add(input_buffer.len());
+
+    // Resize if needed
+    let new_size = self.backing_buffer.try_resize(end_pos)?;
+    let end_pos = end_pos.min(new_size);
+
+    let buffer = self.backing_buffer.as_mut();
+    buffer[self.position..end_pos].copy_from_slice(input_buffer);
+
+    self.position = end_pos;
+    Ok(input_buffer.len())
+  }
+
+  fn flush(&mut self) -> Result<(), Self::FlushError> {
+    // No-op for in-memory buffer.
+    Ok(())
   }
 }
 

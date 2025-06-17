@@ -1,3 +1,7 @@
+use core::cell::{Cell, RefCell, UnsafeCell};
+
+use alloc::boxed::Box;
+
 use crate::no_std_io::LimitedReader;
 
 /// Trait for reading bytes.
@@ -13,18 +17,66 @@ pub trait Read {
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError>;
 }
 
-fn advance_mut(slice: &mut &mut [u8], n: usize) {
-  *slice = &mut core::mem::take(slice)[n..];
+impl<R: Read + ?Sized> Read for &mut R {
+  type ReadError = R::ReadError;
+
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+    (**self).read(output_buffer)
+  }
+}
+
+fn advance<T: AsRef<[u8]> + ?Sized>(slice: &mut T, n: usize) {
+  let slice_ref = &mut slice.as_ref();
+  *slice_ref = &core::mem::take(slice_ref)[n..];
+}
+
+fn read_slice<T: AsRef<[u8]> + ?Sized>(
+  slice: &mut T,
+  output_buffer: &mut [u8],
+) -> Result<usize, core::convert::Infallible> {
+  let n = core::cmp::min(output_buffer.len(), slice.as_ref().len());
+  output_buffer[..n].copy_from_slice(&slice.as_ref()[..n]);
+  advance(slice, n);
+  Ok(n)
+}
+
+impl<R: Read + ?Sized> Read for Box<R> {
+  type ReadError = R::ReadError;
+
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+    self.as_mut().read(output_buffer)
+  }
+}
+
+impl<R: Read + ?Sized> Read for RefCell<R> {
+  type ReadError = R::ReadError;
+
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+    self.get_mut().read(output_buffer)
+  }
+}
+
+impl<R: Read + ?Sized> Read for Cell<R> {
+  type ReadError = R::ReadError;
+
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+    self.get_mut().read(output_buffer)
+  }
+}
+
+impl<R: Read + ?Sized> Read for UnsafeCell<R> {
+  type ReadError = R::ReadError;
+
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+    self.get_mut().read(output_buffer)
+  }
 }
 
 impl Read for &[u8] {
   type ReadError = core::convert::Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    let n = core::cmp::min(output_buffer.len(), self.len());
-    output_buffer[..n].copy_from_slice(&self[..n]);
-    *self = &self[n..];
-    Ok(n)
+    read_slice(self, output_buffer)
   }
 }
 
@@ -32,10 +84,7 @@ impl Read for &mut [u8] {
   type ReadError = core::convert::Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    let n = core::cmp::min(output_buffer.len(), self.len());
-    output_buffer[..n].copy_from_slice(&self[..n]);
-    advance_mut(self, n);
-    Ok(n)
+    read_slice(self, output_buffer)
   }
 }
 
@@ -43,10 +92,15 @@ impl<const N: usize> Read for [u8; N] {
   type ReadError = core::convert::Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    let n = core::cmp::min(output_buffer.len(), self.len());
-    output_buffer[..n].copy_from_slice(&self[..n]);
-    advance_mut(&mut self.as_mut_slice(), n);
-    Ok(n)
+    read_slice(self, output_buffer)
+  }
+}
+
+impl<const N: usize> Read for &[u8; N] {
+  type ReadError = core::convert::Infallible;
+
+  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+    read_slice(self, output_buffer)
   }
 }
 

@@ -5,24 +5,18 @@ use crate::no_std_io::{
 /// A buffered reader can be used to add buffering to any reader.
 ///
 /// To be generic over any buffered reader implementation, consider being generic over the [`BufferedRead`](crate::no_std_io::BufferedRead) trait instead.
-pub struct BufferedReader<'buffered_reader, R: Read + ?Sized, B: BackingBufferMut + ?Sized> {
-  source: &'buffered_reader mut R,
-  buffer: &'buffered_reader mut B,
+pub struct BufferedReader<R: Read, B: BackingBufferMut> {
+  source: R,
+  buffer: B,
   last_user_read: usize,
   bytes_in_buffer: usize,
   read_chunk_size: usize,
 }
 
-impl<'buffered_reader, R: Read + ?Sized, B: BackingBufferMut + ?Sized>
-  BufferedReader<'buffered_reader, R, B>
-{
+impl<R: Read, B: BackingBufferMut> BufferedReader<R, B> {
   /// Creates a new buffered reader with the given source and buffer.
   #[must_use]
-  pub fn new(
-    source: &'buffered_reader mut R,
-    buffer: &'buffered_reader mut B,
-    read_chunk_size: usize,
-  ) -> Self {
+  pub fn new(source: R, buffer: B, read_chunk_size: usize) -> Self {
     Self {
       source,
       buffer,
@@ -86,9 +80,7 @@ impl<'buffered_reader, R: Read + ?Sized, B: BackingBufferMut + ?Sized>
   }
 }
 
-impl<'buffered_reader, R: Read + ?Sized, B: BackingBufferMut + ?Sized> Read
-  for BufferedReader<'buffered_reader, R, B>
-{
+impl<R: Read, B: BackingBufferMut> Read for BufferedReader<R, B> {
   type ReadError = R::ReadError;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -143,9 +135,7 @@ impl<'buffered_reader, R: Read + ?Sized, B: BackingBufferMut + ?Sized> Read
   }
 }
 
-impl<'buffered_reader, R: Read + ?Sized, B: BackingBufferMut + ?Sized> BufferedRead
-  for BufferedReader<'buffered_reader, R, B>
-{
+impl<R: Read, B: BackingBufferMut> BufferedRead for BufferedReader<R, B> {
   type BackingImplementation = Self;
 
   fn fork_reader(&mut self) -> ForkedBufferedReader<'_, Self::BackingImplementation> {
@@ -225,8 +215,8 @@ mod tests {
   #[test]
   fn test_buffered_reader_exact_correct_bytewise() {
     let source_data = b"Hello, world!";
-    let mut slice_reader = Cursor::new(source_data);
-    let mut bytewise_reader = BytewiseReader::new(&mut slice_reader);
+    let mut input_cursor = Cursor::new(source_data);
+    let mut bytewise_reader = BytewiseReader::new(&mut input_cursor);
     const MAX_BUFFER_SIZE: usize = 10;
     let mut backing_buffer = [0; MAX_BUFFER_SIZE];
     let mut buffered_reader = BufferedReader::new(&mut bytewise_reader, &mut backing_buffer, 1);

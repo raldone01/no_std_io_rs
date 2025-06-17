@@ -31,7 +31,7 @@ impl<'a, R: Read + ?Sized> Read for BytewiseReader<'a, R> {
     // Copy the single byte into the output buffer
     output_buffer[0] = single_byte[0];
 
-    Ok(1) // Return the number of bytes read
+    Ok(1) // Return the number of bytes read}
   }
 }
 

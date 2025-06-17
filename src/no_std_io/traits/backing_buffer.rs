@@ -58,6 +58,20 @@ impl<const N: usize> BackingBufferMut for [u8; N] {
   }
 }
 
+impl<const N: usize> BackingBufferMut for &mut [u8; N] {
+  type ResizeError = FixedSizeBufferError;
+
+  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
+    if new_size > N {
+      return Err(FixedSizeBufferError::FixedSize {
+        size: N,
+        requested_size: new_size,
+      });
+    }
+    Ok(N)
+  }
+}
+
 impl BackingBufferMut for Box<[u8]> {
   type ResizeError = FixedSizeBufferError;
 
