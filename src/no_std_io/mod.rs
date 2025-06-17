@@ -1,27 +1,19 @@
-mod empty;
-mod no_std_io;
-mod reader_buffered;
-mod reader_bytewise;
-mod reader_compressed;
-mod reader_limited;
-mod reader_slice;
+mod streams;
+mod traits;
+
+pub use streams::*;
+pub use traits::*;
+
+//mod reader_compressed;
 mod writer_buffer;
 mod writer_buffered;
 mod writer_bytewise;
 mod writer_compressed;
-mod writer_limited;
 mod writer_slice;
 
-pub use empty::*;
-pub use no_std_io::*;
-pub use reader_buffered::*;
-pub use reader_bytewise::*;
-pub use reader_compressed::*;
-pub use reader_limited::*;
-pub use reader_slice::*;
+//pub use reader_compressed::*;
 pub use writer_buffer::*;
 pub use writer_buffered::*;
 pub use writer_bytewise::*;
 pub use writer_compressed::*;
-pub use writer_limited::*;
 pub use writer_slice::*;

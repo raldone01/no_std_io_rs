@@ -63,12 +63,13 @@ impl<'a, R: Read + ?Sized> Read for LimitedReader<'a, R> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::no_std_io::SliceReader;
+
+  use crate::no_std_io::Cursor;
 
   #[test]
   fn test_limited_reader() {
     let data = b"Rust programming language";
-    let mut slice_reader = SliceReader::new(data);
+    let mut slice_reader = Cursor::new(data);
     let mut reader = LimitedReader::new(&mut slice_reader, 5);
 
     let mut buf = [0u8; 20];

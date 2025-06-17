@@ -414,7 +414,7 @@ pub fn parse_tar_file<'a, R: BufferedRead<'a>>(
       TarTypeFlag::UnknownTypeFlag(_) => {
         // we just skip the data_after_header bytes if we don't know the typeflag
         reader
-          .read_exact(data_after_header_block_aligned)
+          .skip(data_after_header_block_aligned)
           .map_err(TarExtractionError::Io)?;
       },
       _ => todo!(),

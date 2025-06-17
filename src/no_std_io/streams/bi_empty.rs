@@ -2,20 +2,20 @@ use core::convert::Infallible;
 
 use crate::no_std_io::{Read, Write};
 
-/// `Empty` ignores any data written via [`Write`], and will always be empty (returning zero bytes) when read via [`Read`].
+/// [`EmptyStream`] ignores any data written via [`Write`], and will always be empty (returning zero bytes) when read via [`Read`].
 ///
 /// This is the equivalent of `std::io::sink()`, `std::io::empty()`, `std::io::Empty` and `/dev/null`.
 #[derive(Default)]
-pub struct Empty;
+pub struct EmptyStream;
 
-impl Empty {
+impl EmptyStream {
   #[must_use]
   pub fn new() -> Self {
     Self
   }
 }
 
-impl Write for Empty {
+impl Write for EmptyStream {
   type WriteError = Infallible;
   type FlushError = Infallible;
 
@@ -28,7 +28,7 @@ impl Write for Empty {
   }
 }
 
-impl Read for Empty {
+impl Read for EmptyStream {
   type ReadError = Infallible;
 
   fn read(&mut self, _output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -44,7 +44,7 @@ mod tests {
 
   #[test]
   fn test_empty_write() {
-    let mut writer = Empty::new();
+    let mut writer = EmptyStream::new();
     let data = b"Hello, World!";
     writer.write_all(data, false).unwrap();
     assert_eq!(writer.flush(), Ok(()));
@@ -52,7 +52,7 @@ mod tests {
 
   #[test]
   fn test_empty_read() {
-    let mut reader = Empty::new();
+    let mut reader = EmptyStream::new();
     let mut buffer = [0u8; 10];
     let bytes_read = reader.read(&mut buffer).unwrap();
     assert_eq!(bytes_read, 0);

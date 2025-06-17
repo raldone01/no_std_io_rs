@@ -39,12 +39,12 @@ impl<'a, R: Read + ?Sized> Read for BytewiseReader<'a, R> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::SliceReader;
+  use crate::no_std_io::Cursor;
 
   #[test]
   fn test_bytewise_reader_reads_correctly() {
     let data = b"Rust";
-    let mut slice_reader = SliceReader::new(data);
+    let mut slice_reader = Cursor::new(data);
     let mut reader = BytewiseReader::new(&mut slice_reader);
 
     // Create a buffer that is larger than 1 to prove it only reads a single byte.

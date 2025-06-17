@@ -17,20 +17,14 @@ Features of this crate:
 
 # TODO no_std_io:
 
-* Add `emscripten` feature to enable `no_std_io` compatibility.
-* Add buffered reader trait
-* Buffered reader extension into iter bytes
-* Add BufRead::consume (avoids buffer copy)
-* Add BufRead::fill_buf -> Result<&[u8], Error> returns internal buffer, filling it with more data via Read if empty
-* Compressed Reader and buffered reader and forked reader into buffered reader trait
 * Proper pipe https://doc.rust-lang.org/std/io/fn.pipe.html
 * Add chain read extension and ChainedReader (impl buffered reader if both readers are buffered readers)
-* `[copy_to]` or `[copy_from]` or `[copy_buffered]`
+* `[copy_to]` or `[copy_from]` or `[copy_buffered]` (picks the bigger buffer)
 * Add lines, split extension to readbuffered
 * Add std::io take extension trait that creates ReaderLimited and WriterLimited
-* Add seek trait https://doc.rust-lang.org/std/io/trait.Seek.html
-* BorrowedCursor: Read + Seek + BufRead where AsRef<[u8]>, Write where AsMut<[u8]> https://doc.rust-lang.org/std/io/struct.BorrowedCursor.html replaces reader_slice and writer_slice
+* Add seek trait https://doc.rust-lang.org/std/io/trait.Seek.html and implement it
 * Cursor: Read + Seek + BufRead + Write (has inner_buffer and pos) https://doc.rust-lang.org/std/io/struct.Cursor.html replaces writer_buffer
+* Add `emscripten` feature to enable `no_std_io` compatibility.
 
 # TODO tar:
 * Make tar creator, extractor, gz compressor, gz decompressor into Read/Write.
