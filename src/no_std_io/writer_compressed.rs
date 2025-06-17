@@ -19,7 +19,7 @@ pub struct CompressedWriter<'a, W: Write + ?Sized> {
   tmp_buffer: Vec<u8>,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum CompressedWriteError<WWE, WFE> {
   #[error("Compressor did not consume all input bytes: {bytes_input} bytes read, {bytes_consumed} bytes consumed")]
   CompressorDidNotConsumeInput {

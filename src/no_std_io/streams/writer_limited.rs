@@ -28,7 +28,7 @@ impl<'a, W: Write + ?Sized> LimitedWriter<'a, W> {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum LimitedWriterWriteError<U> {
   #[error("Write limit of {0} bytes exceeded")]
   WriteLimitExceeded(usize),

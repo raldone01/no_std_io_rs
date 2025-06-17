@@ -67,7 +67,7 @@ impl<B: AsRef<[u8]>> Cursor<B> {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum CursorSeekError {
   #[error("Seek {offset:?} out of bounds: position {position}, length {length}")]
   OutOfBounds {
@@ -234,6 +234,8 @@ impl<B: BackingBufferMut> Write for Cursor<B> {
 
 #[cfg(test)]
 mod tests {
+  use crate::no_std_io::FixedSizeBufferError;
+
   use super::*;
 
   #[test]
@@ -257,5 +259,30 @@ mod tests {
     // Third read (should be EOF)
     let n = reader.read(&mut buf).unwrap();
     assert_eq!(n, 0);
+  }
+
+  #[test]
+  fn test_cursor_writes_correctly() {
+    let mut data = [0u8; 6];
+    let mut writer = Cursor::new(&mut data);
+
+    // First write
+    let n = writer.write(b"abc", false).unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(&writer.as_ref()[..n], b"abc");
+
+    // Second write
+    let n = writer.write(b"def", false).unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(&writer.as_ref(), b"abcdef");
+
+    // Third write (should not write anything)
+    assert_eq!(
+      writer.write(b"oof", false).unwrap_err(),
+      FixedSizeBufferError::FixedSize {
+        size: 6,
+        requested_size: 9,
+      }
+    );
   }
 }

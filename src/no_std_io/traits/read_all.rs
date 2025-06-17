@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::no_std_io::Read;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum ReadAllError<U> {
   #[error("Unexpected EOF while reading {bytes_requested} bytes, only {bytes_read} bytes read")]
   UnexpectedEof {

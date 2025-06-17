@@ -11,7 +11,7 @@ pub struct BufferedWriter<'a, W: Write + ?Sized> {
   always_chunk: bool,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum BufferedWriterWriteError<WWE, WFE> {
   #[error("Underlying write error: {0:?}")]
   IoWrite(WriteAllError<WWE>),

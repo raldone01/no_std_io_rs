@@ -125,7 +125,7 @@ fn parse_null_terminated_string(bytes: &[u8]) -> Result<&str, Utf8Error> {
   str::from_utf8(&bytes[..end])
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum ParseOctalError {
   #[error("Invalid UTF-8 in octal string: {0}")]
   InvalidUtf8(#[from] Utf8Error),
@@ -252,7 +252,7 @@ impl V7Header {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum TarHeaderChecksumError {
   #[error("Corrupt header: Invalid checksum expected {expected:?} but got {actual:?}")]
   WrongChecksum { expected: u32, actual: u32 },

@@ -428,7 +428,7 @@ pub fn parse_tar_file<'a, R: BufferedRead<'a>>(
   todo!()
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum TarExtractionError<U> {
   #[error("Invalid UTF-8 in {0}: {1}")]
   InvalidUtf8InFileName(&'static str, Utf8Error),

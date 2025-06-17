@@ -32,7 +32,7 @@ impl<'a, R: Read + ?Sized> CompressedReader<'a, R> {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum CompressedReadError<U> {
   #[error("Decompressor did not consume all input bytes: {bytes_input} bytes read, {bytes_consumed} bytes consumed")]
   DecompressorDidNotConsumeInput {

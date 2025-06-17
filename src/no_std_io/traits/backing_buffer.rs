@@ -2,7 +2,7 @@ use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
 
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum FixedSizeBufferError {
   #[error("Buffer has a fixed size of {size}, but requested size is {requested_size}")]
   FixedSize { size: usize, requested_size: usize },
@@ -119,7 +119,7 @@ impl<'a, B: BackingBufferMut + ?Sized> LimitedBackingBuffer<'a, B> {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum LimitedBackingBufferError<U> {
   #[error("Memory limit of {0} bytes exceeded for resize")]
   MemoryLimitExceeded(usize),

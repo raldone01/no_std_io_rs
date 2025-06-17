@@ -25,7 +25,7 @@ pub struct GzHeader {
   pub mtime: u32,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum GzHeaderError {
   #[error("Invalid gzip header: {0}")]
   InvalidHeader(&'static str),

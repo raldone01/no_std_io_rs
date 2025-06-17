@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::no_std_io::Write;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum WriteAllError<U> {
   #[error("Underlying device wrote zero bytes after writing {bytes_written} bytes")]
   ZeroWrite { bytes_written: usize },

@@ -69,7 +69,7 @@ impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> BufferedRead
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum ForkedBufferedReaderReadError<U> {
   #[error("Memory limit of {0} bytes exceeded for exact read")]
   MemoryLimitExceeded(usize),

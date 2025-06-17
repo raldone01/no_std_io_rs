@@ -30,7 +30,7 @@ impl<'a, R: Read + ?Sized> LimitedReader<'a, R> {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum LimitedReaderReadError<U> {
   #[error("Read limit of {0} bytes exceeded")]
   ReadLimitExceeded(usize),
