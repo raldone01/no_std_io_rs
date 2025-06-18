@@ -17,6 +17,7 @@ Features of this crate:
 * Fix clippy lints
 * Add `alloc` feature
 * Add doc comments with examples to all public functions and structs.
+* Add audit log to tar parser to track spec violations
 
 # TODO no_std_io:
 

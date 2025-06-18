@@ -3,8 +3,8 @@ use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
 
 use crate::no_std_io::extended_streams::tar::{
-  confident_value::ConfidentValue, GetOrInsertWithOption, InodeBuilder, InodeConfidentValue,
-  SparseFileInstruction, SparseFormat,
+  confident_value::ConfidentValue, InodeBuilder, InodeConfidentValue, SparseFileInstruction,
+  SparseFormat,
 };
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -133,19 +133,63 @@ impl PaxParser {
   }
 
   pub fn load_pax_attributes_into_inode_builder(&self, inode_builder: &mut InodeBuilder) {
+    if let Some(sparse_format) = self.get_sparse_format() {
+      if inode_builder.sparse_format.is_some() {
+        // TODO: log error that we found conflicting sparse formats
+      } else {
+        inode_builder.sparse_format = Some(sparse_format);
+        inode_builder
+          .file_path
+          .update_with(Self::to_confident_value(
+            self.gnu_sparse_name_01_01.get_with_confidence(),
+          ));
+        inode_builder
+          .sparse_real_size
+          .update_with(Self::to_confident_value(
+            self
+              .gnu_sparse_realsize_1_0
+              .get_with_confidence()
+              .or(self.gnu_sparse_realsize_0_01.get_with_confidence()),
+          ));
+        // TODO: this clone can be avoided by moving out
+        inode_builder.sparse_file_instructions =
+          self.gnu_sparse_map.get().cloned().unwrap_or_default();
+      }
+    }
     inode_builder
       .file_path
-      .update_with(Self::to_confident_value(
-        self
-          .gnu_sparse_name_01_01
-          .get_with_confidence()
-          .or(self.path.get_with_confidence()),
-      ));
-    // TODO: all the other stuff
-
+      .update_with(Self::to_confident_value(self.path.get_with_confidence()));
+    inode_builder.mtime.update_with(Self::to_confident_value(
+      self
+        .mtime
+        .get_with_confidence()
+        .and_then(|(confidence, value)| match value.get() {
+          Some(value) => Some((confidence, value)),
+          None => None,
+        }),
+    ));
     inode_builder
-      .sparse_format
-      .get_or_insert_with_option(|| self.get_sparse_format());
+      .gid
+      .update_with(Self::to_confident_value(self.gid.get_with_confidence()));
+    inode_builder
+      .gname
+      .update_with(Self::to_confident_value(self.gname.get_with_confidence()));
+    inode_builder
+      .link_target
+      .update_with(Self::to_confident_value(
+        self.link_path.get_with_confidence(),
+      ));
+    inode_builder
+      .data_after_header_size
+      .update_with(Self::to_confident_value(
+        self.data_size.get_with_confidence(),
+      ));
+    inode_builder
+      .uid
+      .update_with(Self::to_confident_value(self.uid.get_with_confidence()));
+    inode_builder
+      .uname
+      .update_with(Self::to_confident_value(self.uname.get_with_confidence()));
   }
 
   pub fn recover(&mut self) {

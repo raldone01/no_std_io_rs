@@ -56,6 +56,7 @@ impl From<PaxConfidence> for TarConfidence {
   }
 }
 
+#[derive(Clone)]
 pub(crate) struct SparseFileInstruction {
   offset_before: u64,
   data_size: u64,
@@ -246,6 +247,7 @@ pub(crate) struct InodeBuilder {
   pub(crate) sparse_format: Option<SparseFormat>,
   pub(crate) dev_major: u32,
   pub(crate) dev_minor: u32,
+  pub(crate) data_after_header_size: InodeConfidentValue<usize>,
 }
 
 impl TarParser {
@@ -337,7 +339,6 @@ impl TarParser {
     reader: &mut Cursor<&[u8]>,
   ) -> Result<TarParserState, TarParserError> {
     // header parsing variables
-    let mut data_after_header = 0;
     let mut typeflag = TarTypeFlag::UnknownTypeFlag(255);
     let mut old_gnu_sparse_is_extended = false;
 
@@ -372,9 +373,12 @@ impl TarParser {
         .inode_state
         .gid
         .try_get_or_set_with(TarConfidence::V7, || old_header.parse_gid());
-      if let Ok(size) = old_header.parse_size() {
-        data_after_header = size as usize;
-      }
+      let _ = self
+        .inode_state
+        .data_after_header_size
+        .try_get_or_set_with(TarConfidence::V7, || {
+          old_header.parse_size().map(|s| s as usize)
+        });
 
       let _ = self
         .inode_state
@@ -504,6 +508,7 @@ impl TarParser {
     }
     // We parsed everything from the header block and released the buffer.
 
+    let data_after_header = *self.inode_state.data_after_header_size.get().unwrap_or(&0);
     let data_after_header_block_aligned = (data_after_header + 511) & !511; // align to next 512 byte block
     let padding_after_data = data_after_header_block_aligned - data_after_header; // padding after header block
 
