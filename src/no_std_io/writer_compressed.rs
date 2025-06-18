@@ -139,7 +139,7 @@ impl<W: Write + ?Sized> Write for CompressedWriter<'_, W> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BufferWriter, BytewiseWriter};
+  use crate::no_std_io::{BytewiseWriter, Cursor};
 
   #[test]
   fn test_compressed_writer_buffer_size_dynamic_questionmark() {
@@ -149,7 +149,7 @@ mod tests {
     let _reference_compressed_data =
       miniz_oxide::deflate::compress_to_vec_zlib(uncompressed_data, 6);
 
-    let mut buffer_writer = BufferWriter::new(128);
+    let mut buffer_writer = Cursor::new([0; 128]);
     // A buffered writer can counteract the overhead of bytewise writing
     let mut bytewise_writer_after = BytewiseWriter::new(&mut buffer_writer);
     let mut compressed_writer = CompressedWriter::new(&mut bytewise_writer_after, 6, true, 1);
@@ -163,7 +163,7 @@ mod tests {
     compressed_writer
       .finish()
       .expect("Failed to finish compressed writer");
-    let compressed_data = buffer_writer.to_vec();
+    let compressed_data = buffer_writer.before();
     let decompressed_data = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed_data)
       .expect("Failed to decompress data");
     assert_eq!(decompressed_data, uncompressed_data);
@@ -178,7 +178,7 @@ mod tests {
       miniz_oxide::deflate::compress_to_vec(uncompressed_data, 6)
     };
 
-    let mut buffer_writer = BufferWriter::new(128);
+    let mut buffer_writer = Cursor::new([0; 128]);
     let mut compressed_writer = CompressedWriter::new(&mut buffer_writer, 6, use_zlib, 128);
     compressed_writer
       .write_all(uncompressed_data, false)
@@ -190,7 +190,7 @@ mod tests {
     compressed_writer
       .finish()
       .expect("Failed to finish compressed writer");
-    let compressed_data = buffer_writer.to_vec();
+    let compressed_data = buffer_writer.before();
     let decompressed_data = if use_zlib {
       miniz_oxide::inflate::decompress_to_vec_zlib(&compressed_data)
     } else {
@@ -217,7 +217,7 @@ mod tests {
     let _reference_compressed_data =
       miniz_oxide::deflate::compress_to_vec_zlib(uncompressed_data, 6);
 
-    let mut buffer_writer = BufferWriter::new(4096);
+    let mut buffer_writer = Cursor::new([0; 4096]);
     let mut bytewise_writer = BytewiseWriter::new(&mut buffer_writer);
     let mut compressed_writer = CompressedWriter::new(&mut bytewise_writer, 6, true, 128);
     compressed_writer
@@ -230,7 +230,7 @@ mod tests {
     compressed_writer
       .finish()
       .expect("Failed to finish compressed writer");
-    let compressed_data = buffer_writer.to_vec();
+    let compressed_data = buffer_writer.before();
     let decompressed_data = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed_data)
       .expect("Failed to decompress data");
     assert_eq!(decompressed_data, uncompressed_data);

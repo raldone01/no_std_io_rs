@@ -1,11 +1,13 @@
+use thiserror::Error;
+
 use crate::no_std_io::{
-  BackingBufferMut, BufferedRead, ForkedBufferedReader, Read, ReadExactError,
+  BackingBuffer, BufferedRead, ForkedBufferedReader, Read, ReadExactError, ResizeError,
 };
 
 /// A buffered reader can be used to add buffering to any reader.
 ///
 /// To be generic over any buffered reader implementation, consider being generic over the [`BufferedRead`](crate::no_std_io::BufferedRead) trait instead.
-pub struct BufferedReader<R: Read, B: BackingBufferMut> {
+pub struct BufferedReader<R: Read, B: BackingBuffer> {
   source: R,
   buffer: B,
   last_user_read: usize,
@@ -13,7 +15,15 @@ pub struct BufferedReader<R: Read, B: BackingBufferMut> {
   read_chunk_size: usize,
 }
 
-impl<R: Read, B: BackingBufferMut> BufferedReader<R, B> {
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum BufferedReaderReadError<U, RU> {
+  #[error("Failed to resize the internal buffer to fit the requested exact read size: {0}")]
+  ResizeError(ResizeError<RU>),
+  #[error("Underlying read error: {0:?}")]
+  Io(#[from] U),
+}
+
+impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
   /// Creates a new buffered reader with the given source and buffer.
   #[must_use]
   pub fn new(source: R, buffer: B, read_chunk_size: usize) -> Self {
@@ -31,7 +41,7 @@ impl<R: Read, B: BackingBufferMut> BufferedReader<R, B> {
     byte_count: usize,
     skip: bool, // TODO: Use this parameter to skip copying data to the internal buffer.
     peek: bool,
-  ) -> Result<&[u8], ReadExactError<R::ReadError>> {
+  ) -> Result<&[u8], ReadExactError<BufferedReaderReadError<R::ReadError, B::ResizeError>>> {
     if byte_count == 0 {
       // If the user requests 0 bytes, we return an empty slice.
       return Ok(&[]);
@@ -40,11 +50,22 @@ impl<R: Read, B: BackingBufferMut> BufferedReader<R, B> {
     if byte_count > self.buffer.as_ref().len() {
       // If the buffer is smaller than the requested size, we need to grow it.
       // If we grow it, we grow it to at least the read_chunk_size.
-
-      self
-        .buffer
-        .try_resize(byte_count.div_ceil(self.read_chunk_size).max(1) * self.read_chunk_size)
-        .map_err(|_| ReadExactError::MemoryLimitExceeded(self.buffer.as_ref().len()))?;
+      let grow_target = byte_count.div_ceil(self.read_chunk_size).max(1) * self.read_chunk_size;
+      let resize_result = self.buffer.try_resize(grow_target);
+      if let Err(ResizeError {
+        size_after_resize,
+        resize_error,
+      }) = resize_result
+      {
+        if size_after_resize < byte_count {
+          return Err(ReadExactError::Io(BufferedReaderReadError::ResizeError(
+            ResizeError {
+              size_after_resize,
+              resize_error,
+            },
+          )));
+        }
+      }
     }
 
     // Move the remaining bytes in the buffer to the front.
@@ -60,7 +81,8 @@ impl<R: Read, B: BackingBufferMut> BufferedReader<R, B> {
       // Read more data into the buffer.
       let bytes_read = self
         .source
-        .read(&mut self.buffer.as_mut()[self.bytes_in_buffer..])?;
+        .read(&mut self.buffer.as_mut()[self.bytes_in_buffer..])
+        .map_err(|e| ReadExactError::Io(BufferedReaderReadError::Io(e)))?;
       self.bytes_in_buffer += bytes_read;
       if bytes_read == 0 {
         // If we read 0 bytes, it means the source is exhausted but the user requested more data.
@@ -75,13 +97,13 @@ impl<R: Read, B: BackingBufferMut> BufferedReader<R, B> {
     if !peek {
       self.last_user_read = byte_count;
     }
-    let result = &self.buffer.as_ref()[..byte_count];
+    let result = &self.buffer.as_mut()[..byte_count];
     Ok(result)
   }
 }
 
-impl<R: Read, B: BackingBufferMut> Read for BufferedReader<R, B> {
-  type ReadError = R::ReadError;
+impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
+  type ReadError = BufferedReaderReadError<R::ReadError, B::ResizeError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     if output_buffer.is_empty() {
@@ -112,12 +134,6 @@ impl<R: Read, B: BackingBufferMut> Read for BufferedReader<R, B> {
     // To avoid tiny reads, we use the read_exact method to fill the rest of the buffer.
     let additional_bytes = match self.read_exact(remaining_bytes) {
       Ok(bytes) => bytes,
-      Err(ReadExactError::MemoryLimitExceeded(max_buffer_size)) => {
-        panic!(
-          "Memory limit of {} bytes exceeded while using ExactReader as a Read. Is your max_buffer_size smaller than the read_chunk_size?",
-          max_buffer_size
-        );
-      },
       Err(ReadExactError::UnexpectedEof {
         bytes_requested: _,
         min_readable_bytes: _,
@@ -135,7 +151,7 @@ impl<R: Read, B: BackingBufferMut> Read for BufferedReader<R, B> {
   }
 }
 
-impl<R: Read, B: BackingBufferMut> BufferedRead for BufferedReader<R, B> {
+impl<R: Read, B: BackingBuffer> BufferedRead for BufferedReader<R, B> {
   type BackingImplementation = Self;
 
   fn fork_reader(&mut self) -> ForkedBufferedReader<'_, Self::BackingImplementation> {
@@ -174,7 +190,7 @@ impl<R: Read, B: BackingBufferMut> BufferedRead for BufferedReader<R, B> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BytewiseReader, Cursor};
+  use crate::no_std_io::{BytewiseReader, Cursor, FixedSizeBufferError};
 
   #[test]
   fn test_buffered_reader_exact_correct() {
@@ -199,7 +215,13 @@ mod tests {
     // Test MemoryLimitExceeded error
     assert_eq!(
       reader.read_exact(5).unwrap_err(),
-      ReadExactError::MemoryLimitExceeded(MAX_BUFFER_SIZE)
+      ReadExactError::Io(BufferedReaderReadError::ResizeError(ResizeError {
+        size_after_resize: MAX_BUFFER_SIZE,
+        resize_error: FixedSizeBufferError {
+          fixed_buffer_size: MAX_BUFFER_SIZE,
+          requested_size: 5,
+        }
+      }))
     );
 
     // Test UnexpectedEof error
@@ -215,8 +237,8 @@ mod tests {
   #[test]
   fn test_buffered_reader_exact_correct_bytewise() {
     let source_data = b"Hello, world!";
-    let mut input_cursor = Cursor::new(source_data);
-    let mut bytewise_reader = BytewiseReader::new(&mut input_cursor);
+    let mut slice_reader = Cursor::new(source_data);
+    let mut bytewise_reader = BytewiseReader::new(&mut slice_reader);
     const MAX_BUFFER_SIZE: usize = 10;
     let mut backing_buffer = [0; MAX_BUFFER_SIZE];
     let mut buffered_reader = BufferedReader::new(&mut bytewise_reader, &mut backing_buffer, 1);
@@ -300,7 +322,13 @@ mod tests {
     // Check that out of memory error is handled correctly
     assert_eq!(
       forked_reader.read_exact(1).unwrap_err(),
-      ReadExactError::MemoryLimitExceeded(MAX_BUFFER_SIZE)
+      ReadExactError::Io(BufferedReaderReadError::ResizeError(ResizeError {
+        size_after_resize: MAX_BUFFER_SIZE,
+        resize_error: FixedSizeBufferError {
+          fixed_buffer_size: MAX_BUFFER_SIZE,
+          requested_size: MAX_BUFFER_SIZE + 1,
+        },
+      }))
     );
 
     // Check that we can still read from the original buffered reader

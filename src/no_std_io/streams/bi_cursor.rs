@@ -3,7 +3,8 @@ use core::convert::Infallible;
 use thiserror::Error;
 
 use crate::no_std_io::{
-  BackingBufferMut, BufferedRead, ForkedBufferedReader, Read, ReadExactError, Seek, SeekFrom, Write,
+  BackingBuffer, BufferedRead, ForkedBufferedReader, Read, ReadExactError, ResizeError, Seek,
+  SeekFrom, Write,
 };
 
 pub struct Cursor<B> {
@@ -45,9 +46,14 @@ impl<B: AsRef<[u8]>> Cursor<B> {
   pub fn remaining(&self) -> usize {
     self.len().saturating_sub(self.position)
   }
+
+  #[must_use]
+  pub fn full_buffer(&self) -> &[u8] {
+    self.backing_buffer.as_ref()
+  }
 }
 
-impl<B: BackingBufferMut> Cursor<B> {
+impl<B: BackingBuffer> Cursor<B> {
   #[must_use]
   pub fn backing_buffer(&self) -> &B {
     &self.backing_buffer
@@ -60,10 +66,38 @@ impl<B: BackingBufferMut> Cursor<B> {
 }
 
 impl<B: AsRef<[u8]>> Cursor<B> {
+  #[must_use]
   pub fn split(&self) -> (&[u8], &[u8]) {
     let slice = self.backing_buffer.as_ref();
     let position = self.position.min(slice.len());
     slice.split_at(position)
+  }
+
+  #[must_use]
+  pub fn before(&self) -> &[u8] {
+    self.split().0
+  }
+  #[must_use]
+  pub fn after(&self) -> &[u8] {
+    self.split().1
+  }
+}
+
+impl<B: AsMut<[u8]>> Cursor<B> {
+  #[must_use]
+  pub fn split_mut(&mut self) -> (&mut [u8], &mut [u8]) {
+    let slice = self.backing_buffer.as_mut();
+    let position = self.position.min(slice.len());
+    slice.split_at_mut(position)
+  }
+
+  #[must_use]
+  pub fn before_mut(&mut self) -> &mut [u8] {
+    self.split_mut().0
+  }
+  #[must_use]
+  pub fn after_mut(&mut self) -> &mut [u8] {
+    self.split_mut().1
   }
 }
 
@@ -187,40 +221,38 @@ impl<B: AsRef<[u8]>> BufferedRead for Cursor<B> {
   }
 }
 
-impl<B: BackingBufferMut> BackingBufferMut for Cursor<B> {
-  type ResizeError = B::ResizeError;
-
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
-    self.backing_buffer.try_resize(new_size)?;
-    Ok(new_size)
-  }
-}
-
-impl<B: AsRef<[u8]>> AsRef<[u8]> for Cursor<B> {
-  fn as_ref(&self) -> &[u8] {
-    self.backing_buffer.as_ref()
-  }
-}
-
-impl<B: AsMut<[u8]>> AsMut<[u8]> for Cursor<B> {
-  fn as_mut(&mut self) -> &mut [u8] {
-    self.backing_buffer.as_mut()
-  }
-}
-
-impl<B: BackingBufferMut> Write for Cursor<B> {
+impl<B: BackingBuffer> Write for Cursor<B> {
   type WriteError = B::ResizeError;
   type FlushError = Infallible;
 
   fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
-    let end_pos = self.position.saturating_add(input_buffer.len());
+    if input_buffer.is_empty() {
+      return Ok(0);
+    }
+
+    let mut end_pos = self.position.saturating_add(input_buffer.len());
 
     // Resize if needed
-    let new_size = self.backing_buffer.try_resize(end_pos)?;
-    let end_pos = end_pos.min(new_size);
+    if end_pos > self.backing_buffer.as_mut().len() {
+      let resize_result = self.backing_buffer.try_resize(end_pos);
+      let backing_buffer_size = match resize_result {
+        Ok(new_size) => new_size,
+        Err(ResizeError {
+          size_after_resize,
+          resize_error,
+        }) => {
+          if size_after_resize.saturating_sub(end_pos) == 0 {
+            return Err(resize_error);
+          }
+          size_after_resize
+        },
+      };
+
+      end_pos = backing_buffer_size;
+    };
 
     let buffer = self.backing_buffer.as_mut();
-    buffer[self.position..end_pos].copy_from_slice(input_buffer);
+    buffer[self.position..end_pos].copy_from_slice(&input_buffer[..end_pos - self.position]);
 
     self.position = end_pos;
     Ok(input_buffer.len())
@@ -234,6 +266,8 @@ impl<B: BackingBufferMut> Write for Cursor<B> {
 
 #[cfg(test)]
 mod tests {
+  use alloc::vec::Vec;
+
   use crate::no_std_io::FixedSizeBufferError;
 
   use super::*;
@@ -263,26 +297,33 @@ mod tests {
 
   #[test]
   fn test_cursor_writes_correctly() {
-    let mut data = [0u8; 6];
-    let mut writer = Cursor::new(&mut data);
+    let mut cursor_mut = Cursor::new([0u8; 6]);
 
     // First write
-    let n = writer.write(b"abc", false).unwrap();
+    let n = cursor_mut.write(b"abc", false).unwrap();
     assert_eq!(n, 3);
-    assert_eq!(&writer.as_ref()[..n], b"abc");
+    assert_eq!(&cursor_mut.before(), b"abc");
 
     // Second write
-    let n = writer.write(b"def", false).unwrap();
+    let n = cursor_mut.write(b"def", false).unwrap();
     assert_eq!(n, 3);
-    assert_eq!(&writer.as_ref(), b"abcdef");
+    assert_eq!(&cursor_mut.before(), b"abcdef");
 
     // Third write (should not write anything)
     assert_eq!(
-      writer.write(b"oof", false).unwrap_err(),
-      FixedSizeBufferError::FixedSize {
-        size: 6,
+      cursor_mut.write(b"oof", false).unwrap_err(),
+      FixedSizeBufferError {
+        fixed_buffer_size: 6,
         requested_size: 9,
       }
     );
+  }
+
+  #[test]
+  fn test_cursor_growing() {
+    let mut cursor_mut = Cursor::new(Vec::new());
+    let n = cursor_mut.write(b"abc", false).unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(cursor_mut.before(), b"abc");
   }
 }

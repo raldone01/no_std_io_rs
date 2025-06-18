@@ -39,11 +39,13 @@ impl<W: Write + ?Sized> Write for BytewiseWriter<'_, W> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::BufferWriter;
+  use alloc::vec::Vec;
+
+  use crate::no_std_io::Cursor;
 
   #[test]
   fn test_bytewise_writer_writes_correctly() {
-    let mut buffer_writer = BufferWriter::new(usize::MAX);
+    let mut buffer_writer = Cursor::new(Vec::new());
     let mut writer = BytewiseWriter::new(&mut buffer_writer);
 
     // Input data to write
@@ -57,12 +59,12 @@ mod tests {
     assert!(writer.flush().is_ok());
 
     // Ensure all bytes were written correctly
-    assert_eq!(buffer_writer.as_slice(), b"Rust");
+    assert_eq!(buffer_writer.before(), b"Rust");
   }
 
   #[test]
   fn test_bytewise_writer_empty_input() {
-    let mut buffer_writer = BufferWriter::new(usize::MAX);
+    let mut buffer_writer = Cursor::new(Vec::new());
     let mut writer = BytewiseWriter::new(&mut buffer_writer);
 
     // Write empty buffer
@@ -70,6 +72,6 @@ mod tests {
     assert_eq!(bytes_written, 0);
 
     // Ensure nothing was written
-    assert!(buffer_writer.as_slice().is_empty());
+    assert!(buffer_writer.before().is_empty());
   }
 }

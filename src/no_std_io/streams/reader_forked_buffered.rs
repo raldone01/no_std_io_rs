@@ -1,5 +1,3 @@
-use thiserror::Error;
-
 use crate::no_std_io::{BufferedRead, Read, ReadExactError};
 
 /// See [`BufferedRead`] for more details.
@@ -69,16 +67,8 @@ impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> BufferedRead
   }
 }
 
-#[derive(Error, Debug, PartialEq, Eq)]
-pub enum ForkedBufferedReaderReadError<U> {
-  #[error("Memory limit of {0} bytes exceeded for exact read")]
-  MemoryLimitExceeded(usize),
-  #[error("Underlying read error: {0:?}")]
-  Io(#[from] U),
-}
-
 impl<R: BufferedRead<BackingImplementation = R> + ?Sized> Read for ForkedBufferedReader<'_, R> {
-  type ReadError = ForkedBufferedReaderReadError<R::ReadError>;
+  type ReadError = ReadExactError<<R::BackingImplementation as Read>::ReadError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     if output_buffer.is_empty() {
@@ -87,11 +77,6 @@ impl<R: BufferedRead<BackingImplementation = R> + ?Sized> Read for ForkedBuffere
 
     let bytes = match self.read_exact(output_buffer.len()) {
       Ok(bytes) => bytes,
-      Err(ReadExactError::MemoryLimitExceeded(max_buffer_size)) => {
-        return Err(ForkedBufferedReaderReadError::MemoryLimitExceeded(
-          max_buffer_size,
-        ));
-      },
       Err(ReadExactError::UnexpectedEof {
         min_readable_bytes: bytes_read,
         bytes_requested: _,
@@ -103,7 +88,7 @@ impl<R: BufferedRead<BackingImplementation = R> + ?Sized> Read for ForkedBuffere
           .read_exact(bytes_read)
           .unwrap_or_else(|_| panic!("Failed to read internal buffer. This is a bug!"))[position..]
       },
-      Err(ReadExactError::Io(e)) => return Err(ForkedBufferedReaderReadError::Io(e)),
+      Err(ReadExactError::Io(e)) => return Err(Self::ReadError::Io(e)),
     };
 
     output_buffer.copy_from_slice(bytes);

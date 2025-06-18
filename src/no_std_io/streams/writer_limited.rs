@@ -67,12 +67,12 @@ impl<'a, W: Write + ?Sized> Write for LimitedWriter<'a, W> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BufferWriter, WriteAll as _, WriteAllError};
+  use crate::no_std_io::{Cursor, WriteAll as _, WriteAllError};
 
   #[test]
   fn test_limited_writer() {
     let data = b"HelloWorld!";
-    let mut buffer_writer = BufferWriter::new(100);
+    let mut buffer_writer = Cursor::new([0; 100]);
     let mut limited_writer = LimitedWriter::new(&mut buffer_writer, 10);
 
     let write_result = limited_writer.write_all(data, false);
@@ -82,7 +82,7 @@ mod tests {
         LimitedWriterWriteError::WriteLimitExceeded(10)
       ))
     ));
-    let written_data = buffer_writer.as_slice();
+    let written_data = buffer_writer.before();
     assert_eq!(written_data, b"HelloWorld");
   }
 }

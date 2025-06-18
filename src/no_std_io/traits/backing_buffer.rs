@@ -1,107 +1,129 @@
+use core::fmt::Display;
+
 use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
 
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq, Eq)]
-pub enum FixedSizeBufferError {
-  #[error("Buffer has a fixed size of {size}, but requested size is {requested_size}")]
-  FixedSize { size: usize, requested_size: usize },
+pub struct ResizeError<U> {
+  pub size_after_resize: usize,
+  pub resize_error: U,
 }
 
-pub trait BackingBufferMut: AsMut<[u8]> + AsRef<[u8]> {
+#[derive(Error, Debug, PartialEq, Eq)]
+pub struct FixedSizeBufferError {
+  pub fixed_buffer_size: usize,
+  pub requested_size: usize,
+}
+
+impl Display for FixedSizeBufferError {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(
+      f,
+      "Buffer has a fixed size of {}, but requested size is {}",
+      self.fixed_buffer_size, self.requested_size
+    )
+  }
+}
+
+pub trait BackingBuffer: AsMut<[u8]> + AsRef<[u8]> {
   type ResizeError;
 
   /// Returns the new size of the buffer after resizing.
   ///
-  /// When shrinking is requested, but the buffer has a fixed size, returning a larger size than `new_size` is allowed.
-  ///
-  /// It is an error to return less than the requested size.
+  /// If a larger size is requested but no new items could be allocated,
+  /// an error must be returned.
   #[must_use]
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError>;
+  fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>>;
 }
 
-impl BackingBufferMut for Vec<u8> {
+impl<B: BackingBuffer + ?Sized> BackingBuffer for &mut B {
+  type ResizeError = B::ResizeError;
+
+  fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
+    (**self).try_resize(requested_size)
+  }
+}
+
+impl BackingBuffer for Vec<u8> {
   type ResizeError = TryReserveError;
 
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
-    self.try_reserve(new_size.saturating_sub(self.len()))?;
-    self.resize(new_size, 0);
-    Ok(self.len())
+  fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
+    let len = self.len();
+    self
+      .try_reserve(requested_size.saturating_sub(len))
+      .map_err(|e| ResizeError {
+        size_after_resize: len,
+        resize_error: e,
+      })?;
+    self.resize(requested_size, 0);
+    Ok(requested_size)
   }
 }
 
-impl<'a> BackingBufferMut for &'a mut [u8] {
+impl BackingBuffer for &mut [u8] {
   type ResizeError = FixedSizeBufferError;
 
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
-    if new_size > self.len() {
-      return Err(FixedSizeBufferError::FixedSize {
-        size: self.len(),
-        requested_size: new_size,
+  fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
+    let len = self.len();
+    if requested_size > len {
+      return Err(ResizeError {
+        size_after_resize: len,
+        resize_error: FixedSizeBufferError {
+          fixed_buffer_size: len,
+          requested_size: requested_size,
+        },
       });
     }
     Ok(self.len())
   }
 }
 
-impl<const N: usize> BackingBufferMut for [u8; N] {
+impl<const N: usize> BackingBuffer for [u8; N] {
   type ResizeError = FixedSizeBufferError;
 
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
-    if new_size > N {
-      return Err(FixedSizeBufferError::FixedSize {
-        size: N,
-        requested_size: new_size,
+  fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
+    if requested_size > N {
+      return Err(ResizeError {
+        size_after_resize: N,
+        resize_error: FixedSizeBufferError {
+          fixed_buffer_size: N,
+          requested_size: requested_size,
+        },
       });
     }
     Ok(N)
   }
 }
 
-impl<const N: usize> BackingBufferMut for &mut [u8; N] {
+impl BackingBuffer for Box<[u8]> {
   type ResizeError = FixedSizeBufferError;
 
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
-    if new_size > N {
-      return Err(FixedSizeBufferError::FixedSize {
-        size: N,
-        requested_size: new_size,
-      });
-    }
-    Ok(N)
-  }
-}
-
-impl BackingBufferMut for Box<[u8]> {
-  type ResizeError = FixedSizeBufferError;
-
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
+  fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
     // A Box<[u8]> has a fixed size. Resizing would require a new allocation,
     // which is not supported by this implementation. For a resizable buffer, use Vec<u8>.
-    /*
-    let mut vec = self.to_vec();
-    vec.try_reserve(new_size.saturating_sub(vec.len()))?;
-    vec.resize(new_size, 0);
-    *self = vec.into_boxed_slice();
-    Ok(self.len())
-     */
-    if new_size > self.len() {
-      return Err(FixedSizeBufferError::FixedSize {
-        size: self.len(),
-        requested_size: new_size,
+    let len = self.len();
+
+    if requested_size > len {
+      return Err(ResizeError {
+        size_after_resize: len,
+        resize_error: FixedSizeBufferError {
+          fixed_buffer_size: len,
+          requested_size: requested_size,
+        },
       });
     }
-    Ok(self.len())
+    Ok(len)
   }
 }
 
 /// Imposes a size limit on the resize function of a [`BackingBufferMut`].
-pub struct LimitedBackingBuffer<'a, B: BackingBufferMut + ?Sized> {
+pub struct LimitedBackingBuffer<'a, B: BackingBuffer + ?Sized> {
   backing_buffer: &'a mut B,
   max_size: usize,
 }
 
-impl<'a, B: BackingBufferMut + ?Sized> LimitedBackingBuffer<'a, B> {
+impl<'a, B: BackingBuffer + ?Sized> LimitedBackingBuffer<'a, B> {
   #[must_use]
   pub fn new(backing_buffer: &'a mut B, max_size: usize) -> Self {
     Self {
@@ -127,27 +149,36 @@ pub enum LimitedBackingBufferError<U> {
   ResizeError(#[from] U),
 }
 
-impl<B: BackingBufferMut + ?Sized> AsMut<[u8]> for LimitedBackingBuffer<'_, B> {
+impl<B: BackingBuffer + ?Sized> BackingBuffer for LimitedBackingBuffer<'_, B> {
+  type ResizeError = LimitedBackingBufferError<B::ResizeError>;
+
+  fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
+    let resize_size = requested_size.min(self.max_size);
+    let new_elements = resize_size.saturating_sub(self.backing_buffer.as_mut().len());
+    if new_elements == 0 {
+      return Err(ResizeError {
+        size_after_resize: self.backing_buffer.as_mut().len(),
+        resize_error: Self::ResizeError::MemoryLimitExceeded(self.max_size),
+      });
+    }
+    let requested_size = self
+      .backing_buffer
+      .try_resize(resize_size)
+      .map_err(|e| ResizeError {
+        size_after_resize: e.size_after_resize,
+        resize_error: Self::ResizeError::ResizeError(e.resize_error),
+      })?;
+    Ok(requested_size)
+  }
+}
+
+impl<B: BackingBuffer + ?Sized> AsMut<[u8]> for LimitedBackingBuffer<'_, B> {
   fn as_mut(&mut self) -> &mut [u8] {
     self.backing_buffer.as_mut()
   }
 }
 
-impl<B: BackingBufferMut + ?Sized> BackingBufferMut for LimitedBackingBuffer<'_, B> {
-  type ResizeError = LimitedBackingBufferError<B::ResizeError>;
-
-  fn try_resize(&mut self, new_size: usize) -> Result<usize, Self::ResizeError> {
-    if new_size > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
-    }
-    let new_size = self.backing_buffer.try_resize(new_size)?;
-    Ok(new_size)
-  }
-}
-
-impl<B: BackingBufferMut + ?Sized> AsRef<[u8]> for LimitedBackingBuffer<'_, B> {
+impl<B: BackingBuffer + ?Sized> AsRef<[u8]> for LimitedBackingBuffer<'_, B> {
   fn as_ref(&self) -> &[u8] {
     self.backing_buffer.as_ref()
   }

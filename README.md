@@ -10,6 +10,8 @@ Features of this crate:
 # TODO crate:
 
 * Add `std` feature to enable `std::io` compatibility.
+* Add more impls for Rc Arc and Mutex for std feature for Read and Write traits.
+* Add parking lot feature to enable more impls for Read and Write traits.
 * After maturing enough move `no_std_io` to its own crate.
 * Add feature to opt in to time dependency.
 * Fix clippy lints

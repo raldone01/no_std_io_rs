@@ -11,8 +11,6 @@ pub enum ReadExactError<U> {
     bytes_requested: usize,
     min_readable_bytes: usize,
   },
-  #[error("Memory limit of {0} bytes exceeded for exact read")]
-  MemoryLimitExceeded(usize),
   #[error("Underlying read error: {0:?}")]
   Io(#[from] U),
 }

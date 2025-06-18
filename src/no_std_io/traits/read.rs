@@ -2,7 +2,7 @@ use core::cell::{Cell, RefCell, UnsafeCell};
 
 use alloc::boxed::Box;
 
-use crate::no_std_io::LimitedReader;
+use crate::no_std_io::{advance, LimitedReader};
 
 /// Trait for reading bytes.
 pub trait Read {
@@ -25,16 +25,13 @@ impl<R: Read + ?Sized> Read for &mut R {
   }
 }
 
-fn advance<T: AsRef<[u8]> + ?Sized>(slice: &mut T, n: usize) {
-  let slice_ref = &mut slice.as_ref();
-  *slice_ref = &core::mem::take(slice_ref)[n..];
-}
-
 fn read_slice<T: AsRef<[u8]> + ?Sized>(
   slice: &mut T,
   output_buffer: &mut [u8],
 ) -> Result<usize, core::convert::Infallible> {
-  let n = core::cmp::min(output_buffer.len(), slice.as_ref().len());
+  let slice = &mut slice.as_ref();
+
+  let n = core::cmp::min(output_buffer.len(), slice.len());
   output_buffer[..n].copy_from_slice(&slice.as_ref()[..n]);
   advance(slice, n);
   Ok(n)
@@ -72,7 +69,7 @@ impl<R: Read + ?Sized> Read for UnsafeCell<R> {
   }
 }
 
-impl Read for &[u8] {
+impl Read for [u8] {
   type ReadError = core::convert::Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -80,7 +77,7 @@ impl Read for &[u8] {
   }
 }
 
-impl Read for &mut [u8] {
+impl Read for &[u8] {
   type ReadError = core::convert::Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {

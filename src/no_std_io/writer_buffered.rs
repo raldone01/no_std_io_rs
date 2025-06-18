@@ -95,12 +95,12 @@ impl<'a, W: Write + ?Sized> Write for BufferedWriter<'a, W> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BufferWriter, BytewiseWriter};
+  use crate::no_std_io::{BytewiseWriter, Cursor};
 
   #[test]
   fn test_buffered_writer_chunks_correctly_always_chunk() {
     let input_data = b"Hello, world! This is a test of the BufferedWriter.";
-    let mut buffer_writer = BufferWriter::new(128);
+    let mut buffer_writer = Cursor::new([0; 128]);
     let mut bytewise_writer = BytewiseWriter::new(&mut buffer_writer);
     let mut buffered_writer = BufferedWriter::new(&mut bytewise_writer, 20, true);
     buffered_writer
@@ -109,14 +109,14 @@ mod tests {
     buffered_writer
       .flush()
       .expect("Failed to flush buffered writer");
-    let written_data = buffer_writer.to_vec();
+    let written_data = buffer_writer.before();
     assert_eq!(written_data, input_data);
   }
 
   #[test]
   fn test_buffered_writer_chunks_correctly_chunk_when_necessary() {
     let input_data = b"Hello, world! This is a test of the BufferedWriter.";
-    let mut buffer_writer = BufferWriter::new(128);
+    let mut buffer_writer = Cursor::new([0; 128]);
     let mut buffered_writer = BufferedWriter::new(&mut buffer_writer, 20, false);
     buffered_writer
       .write_all(&input_data[..30], false)
@@ -127,7 +127,7 @@ mod tests {
     buffered_writer
       .flush()
       .expect("Failed to flush buffered writer");
-    let written_data = buffer_writer.to_vec();
+    let written_data = buffer_writer.before();
     assert_eq!(written_data, input_data);
   }
 }
