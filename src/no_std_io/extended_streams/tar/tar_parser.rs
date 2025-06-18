@@ -263,13 +263,17 @@ impl TarParser {
     }
   }
 
-  pub fn recover(&mut self) {
+  fn recover_internal(&mut self) -> InodeBuilder {
     self.pax_parser.recover();
     self
       .pax_parser
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
-    self.inode_state = Default::default();
     self.parser_state = TarParserState::ExpectingTarHeader;
+    core::mem::replace(&mut self.inode_state, Default::default())
+  }
+
+  pub fn recover(&mut self) {
+    self.recover_internal();
   }
 
   /// Returns the currently active global extended pax attributes.
@@ -320,8 +324,11 @@ impl TarParser {
     self
       .pax_parser
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
+    let tar_inode = self.recover_internal();
     let file_entry = file_entry(self);
-    //let mut inode = TarInode {};
+
+    //let inode = TarInode {
+
     todo!()
   }
 
