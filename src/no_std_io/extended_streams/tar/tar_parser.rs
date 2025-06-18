@@ -14,14 +14,8 @@ use crate::no_std_io::{
   core_streams::Cursor,
   extended_streams::tar::{
     confident_value::ConfidentValue,
+    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
     tar_constants::{
-      pax_keys_well_known::{
-        gnu::{
-          GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_NAME_01_01,
-          GNU_SPARSE_REALSIZE_0_01, GNU_SPARSE_REALSIZE_1_0,
-        },
-        PATH,
-      },
       CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse, GnuSparseInstruction,
       ParseOctalError, TarHeaderChecksumError, TarTypeFlag, UstarHeaderAdditions, V7Header,
     },
@@ -45,12 +39,21 @@ pub enum TarParserError {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-enum TarConfidence {
+pub(crate) enum TarConfidence {
   V7 = 1,
   Ustar,
   Gnu,
   PaxGlobal,
-  Pax,
+  PaxLocal,
+}
+
+impl From<PaxConfidence> for TarConfidence {
+  fn from(value: PaxConfidence) -> Self {
+    match value {
+      PaxConfidence::LOCAL => TarConfidence::PaxLocal,
+      PaxConfidence::GLOBAL => TarConfidence::PaxGlobal,
+    }
+  }
 }
 
 pub(crate) struct SparseFileInstruction {
@@ -66,68 +69,6 @@ impl TryFrom<&GnuSparseInstruction> for SparseFileInstruction {
       offset_before: value.parse_offset()?,
       data_size: value.parse_num_bytes()?,
     })
-  }
-}
-
-/// "%d %s=%s\n", <length>, <keyword>, <value>
-struct PaxState {
-  /// We don't support GNU sparse file attributes in global pax attributes.
-  global_extended_attributes: HashMap<String, String>,
-  /// GNU tar violated the POSIX standard by using repeated keywords.
-  /// So we don't use a `HashMap` here.
-  attributes: Vec<(String, String)>,
-  parsed_attributes: HashMap<String, ()>,
-}
-
-impl PaxState {
-  fn preload_parsed_attributes(&mut self) {
-    // Since these attributes are completely broken anyway, we don't want the user to ever see them.
-    const ALWAYS_PARSED_ATTRIBUTES: &[&str] = &[
-      GNU_SPARSE_DATA_BLOCK_OFFSET_0_0,
-      GNU_SPARSE_DATA_BLOCK_SIZE_0_0,
-    ];
-    for key in ALWAYS_PARSED_ATTRIBUTES {
-      self.parsed_attributes.insert(key.to_string(), ());
-    }
-  }
-
-  #[must_use]
-  fn new(initial_global_extended_attributes: HashMap<String, String>) -> Self {
-    let mut selv = Self {
-      global_extended_attributes: initial_global_extended_attributes,
-      attributes: Vec::new(),
-      parsed_attributes: HashMap::new(),
-    };
-    selv.preload_parsed_attributes();
-    selv
-  }
-
-  fn reset_local(&mut self) {
-    self.attributes.clear();
-    self.parsed_attributes.clear();
-    self.preload_parsed_attributes();
-  }
-
-  fn get_attribute(&mut self, key: &str) -> Option<&String> {
-    if self.parsed_attributes.get(key).is_none() {
-      self.parsed_attributes.insert(key.to_string(), ());
-    }
-    let local_attr = self
-      .attributes
-      .iter()
-      .rev()
-      .find_map(|(k, v)| if k == key { Some(v) } else { None });
-    local_attr.or_else(|| self.global_extended_attributes.get(key))
-  }
-
-  fn get_unparsed_extended_attributes(&mut self) -> HashMap<String, String> {
-    let mut unparsed = HashMap::new();
-    for (key, value) in &self.attributes {
-      if !self.parsed_attributes.contains_key(key) {
-        unparsed.insert(key.clone(), value.clone());
-      }
-    }
-    unparsed
   }
 }
 
@@ -151,17 +92,17 @@ impl Default for TarParserOptions {
 
 /// Extension trait for Option to conditionally insert a value using a closure that returns an Option,
 /// only when `self` is None.
-trait GetOrInsertWithMaybe<T> {
+pub(crate) trait GetOrInsertWithOption<T> {
   /// If `self` is Some, returns a mutable reference to the value.
   /// Otherwise, runs the closure. If the closure returns Some, inserts it and returns a mutable reference.
   /// If the closure returns None, leaves `self` as None and returns None.
-  fn get_or_insert_with_maybe<F>(&mut self, f: F) -> Option<&mut T>
+  fn get_or_insert_with_option<F>(&mut self, f: F) -> Option<&mut T>
   where
     F: FnOnce() -> Option<T>;
 }
 
-impl<T> GetOrInsertWithMaybe<T> for Option<T> {
-  fn get_or_insert_with_maybe<F>(&mut self, f: F) -> Option<&mut T>
+impl<T> GetOrInsertWithOption<T> for Option<T> {
+  fn get_or_insert_with_option<F>(&mut self, f: F) -> Option<&mut T>
   where
     F: FnOnce() -> Option<T>,
   {
@@ -173,11 +114,41 @@ impl<T> GetOrInsertWithMaybe<T> for Option<T> {
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-enum SparseFormat {
+pub(crate) enum SparseFormat {
   GnuOld,
   Gnu0_0,
   Gnu0_1,
   Gnu1_0,
+  GnuUnknownSparseFormat { major: u32, minor: u32 },
+}
+
+impl SparseFormat {
+  /// Returns the major and minor version of the GNU sparse format.
+  #[must_use]
+  pub fn get_major_minor(&self) -> (u32, u32) {
+    match self {
+      SparseFormat::GnuOld => (0, 0),
+      SparseFormat::Gnu0_0 => (0, 0),
+      SparseFormat::Gnu0_1 => (0, 1),
+      SparseFormat::Gnu1_0 => (1, 0),
+      SparseFormat::GnuUnknownSparseFormat { major, minor } => (*major, *minor),
+    }
+  }
+
+  /// Creates a new `SparseFormat` from the major and minor version.
+  #[must_use]
+  pub fn try_from_gnu_version(major: Option<u32>, minor: Option<u32>) -> Option<Self> {
+    Some(match (major, minor) {
+      (Some(0), Some(0) | None) => SparseFormat::Gnu0_0,
+      (Some(0) | None, Some(1)) => SparseFormat::Gnu0_1,
+      (Some(1), Some(0)) => SparseFormat::Gnu1_0,
+      (None, None) => return None,
+      (major, minor) => SparseFormat::GnuUnknownSparseFormat {
+        major: major.unwrap_or(0),
+        minor: minor.unwrap_or(0),
+      },
+    })
+  }
 }
 
 enum GnuLongNameType {
@@ -218,7 +189,7 @@ struct StateReadingFileData {
 }
 
 #[derive(Default)]
-enum ParserState {
+enum TarParserState {
   #[default]
   ExpectingTarHeader,
   ParsingPaxData,
@@ -240,31 +211,41 @@ pub struct TarParser {
   seen_files: HashMap<RelativePathBuf, usize>,
   keep_only_last: bool,
 
-  parser_state: ParserState,
-  // Must be reset after each file:
+  parser_state: TarParserState,
   /// Contains both the global and local extended attributes.
-  pax_state: PaxState,
+  pax_parser: PaxParser,
+  // Must be reset after each file:
   inode_state: InodeBuilder,
 }
 
-type InodeConfidentValue<T> = ConfidentValue<TarConfidence, T>;
+pub(crate) type InodeConfidentValue<T> = ConfidentValue<TarConfidence, T>;
+
+impl<T: Clone> From<PaxConfidentValue<T>> for InodeConfidentValue<T> {
+  fn from(value: PaxConfidentValue<T>) -> Self {
+    let mut confident_value = ConfidentValue::default();
+    if let Some((pax_confidence, value)) = value.get_with_confidence() {
+      confident_value.set(TarConfidence::from(pax_confidence), value.clone());
+    }
+    confident_value
+  }
+}
 
 #[derive(Default)]
-struct InodeBuilder {
-  file_path: InodeConfidentValue<RelativePathBuf>,
-  mode: Option<FilePermissions>,
-  uid: InodeConfidentValue<u32>,
-  gid: InodeConfidentValue<u32>,
-  mtime: InodeConfidentValue<u64>,
-  uname: InodeConfidentValue<String>,
-  gname: InodeConfidentValue<String>,
-  link_target: InodeConfidentValue<String>,
-  sparse_file_instructions: Vec<SparseFileInstruction>,
+pub(crate) struct InodeBuilder {
+  pub(crate) file_path: InodeConfidentValue<RelativePathBuf>,
+  pub(crate) mode: Option<FilePermissions>,
+  pub(crate) uid: InodeConfidentValue<u32>,
+  pub(crate) gid: InodeConfidentValue<u32>,
+  pub(crate) mtime: InodeConfidentValue<u64>,
+  pub(crate) uname: InodeConfidentValue<String>,
+  pub(crate) gname: InodeConfidentValue<String>,
+  pub(crate) link_target: InodeConfidentValue<String>,
+  pub(crate) sparse_file_instructions: Vec<SparseFileInstruction>,
   /// The realsize if it is a sparse file.
-  sparse_real_size: InodeConfidentValue<usize>,
-  sparse_format: Option<SparseFormat>,
-  dev_major: u32,
-  dev_minor: u32,
+  pub(crate) sparse_real_size: InodeConfidentValue<usize>,
+  pub(crate) sparse_format: Option<SparseFormat>,
+  pub(crate) dev_major: u32,
+  pub(crate) dev_minor: u32,
 }
 
 impl TarParser {
@@ -277,60 +258,23 @@ impl TarParser {
       keep_only_last: options.keep_only_last,
 
       parser_state: Default::default(),
-      pax_state: PaxState::new(options.initial_global_extended_attributes),
+      pax_parser: PaxParser::new(options.initial_global_extended_attributes),
       inode_state: Default::default(),
     }
   }
 
-  fn load_pax_into_parser(&mut self, parse_confidence: TarConfidence) {
-    self
-      .inode_state
-      .file_path
-      .get_or_set_with(parse_confidence, || {
-        self
-          .pax_state
-          .get_attribute(GNU_SPARSE_NAME_01_01)
-          .map(RelativePathBuf::from)
-      });
-    self
-      .inode_state
-      .file_path
-      .get_or_set_with(parse_confidence, || {
-        self
-          .pax_state
-          .get_attribute(PATH)
-          .map(RelativePathBuf::from)
-      });
-    self
-      .inode_state
-      .sparse_real_size
-      .get_or_set_with(parse_confidence, || {
-        self
-          .pax_state
-          .get_attribute(GNU_SPARSE_REALSIZE_1_0)
-          .and_then(|s| s.parse().ok())
-      });
-    self
-      .inode_state
-      .sparse_real_size
-      .get_or_set_with(parse_confidence, || {
-        self
-          .pax_state
-          .get_attribute(GNU_SPARSE_REALSIZE_0_01)
-          .and_then(|s| s.parse().ok())
-      });
-  }
-
   pub fn recover(&mut self) {
-    self.pax_state.reset_local();
-    self.load_pax_into_parser(TarConfidence::PaxGlobal);
+    self.pax_parser.recover();
+    self
+      .pax_parser
+      .load_pax_attributes_into_inode_builder(&mut self.inode_state);
     self.inode_state = Default::default();
-    self.parser_state = ParserState::ExpectingTarHeader;
+    self.parser_state = TarParserState::ExpectingTarHeader;
   }
 
   /// Returns the currently active global extended pax attributes.
   pub fn get_global_extended_attributes(&self) -> &HashMap<String, String> {
-    &self.pax_state.global_extended_attributes
+    &self.pax_parser.global_extended_attributes()
   }
 
   /// Returns the files that have been extracted so far.
@@ -372,8 +316,10 @@ impl TarParser {
     }
   }
 
-  fn finish_inode(&mut self, file_entry: impl FnOnce(&mut Self) -> FileEntry) -> ParserState {
-    self.load_pax_into_parser(TarConfidence::Pax);
+  fn finish_inode(&mut self, file_entry: impl FnOnce(&mut Self) -> FileEntry) -> TarParserState {
+    self
+      .pax_parser
+      .load_pax_attributes_into_inode_builder(&mut self.inode_state);
     let file_entry = file_entry(self);
     //let mut inode = TarInode {};
     todo!()
@@ -382,7 +328,7 @@ impl TarParser {
   fn state_expecting_tar_header(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-  ) -> Result<ParserState, TarParserError> {
+  ) -> Result<TarParserState, TarParserError> {
     // header parsing variables
     let mut data_after_header = 0;
     let mut typeflag = TarTypeFlag::UnknownTypeFlag(255);
@@ -410,7 +356,7 @@ impl TarParser {
       self
         .inode_state
         .mode
-        .get_or_insert_with_maybe(|| old_header.parse_mode());
+        .get_or_insert_with_option(|| old_header.parse_mode());
       let _ = self
         .inode_state
         .uid
@@ -586,7 +532,7 @@ impl TarParser {
         parse_pax_data(true)?;
       },*/
       TarTypeFlag::LongNameGnu => {
-        ParserState::ParsingGnuLongName(StateParsingGnuLongName {
+        TarParserState::ParsingGnuLongName(StateParsingGnuLongName {
           remaining_data: data_after_header,
           padding_after_data,
           long_name_type: GnuLongNameType::FileName,
@@ -594,7 +540,7 @@ impl TarParser {
         })
       },
       TarTypeFlag::LongLinkNameGnu => {
-        ParserState::ParsingGnuLongName(StateParsingGnuLongName {
+        TarParserState::ParsingGnuLongName(StateParsingGnuLongName {
           remaining_data: data_after_header,
           padding_after_data,
           long_name_type: GnuLongNameType::LinkName,
@@ -603,19 +549,19 @@ impl TarParser {
       },
       TarTypeFlag::SparseOldGnu => {
         if old_gnu_sparse_is_extended {
-          ParserState::ExpectingOldGnuSparseExtendedHeader(
+          TarParserState::ExpectingOldGnuSparseExtendedHeader(
             StateExpectingOldGnuSparseExtendedHeader {
               data_after_header,
               padding_after_data,
             },
           )
         } else {
-          ParserState::ExpectingTarHeader
+          TarParserState::ExpectingTarHeader
         }
       },
       TarTypeFlag::UnknownTypeFlag(_) => {
         // we just skip the data_after_header bytes if we don't know the typeflag
-        ParserState::SkippingData(StateSkippingData {
+        TarParserState::SkippingData(StateSkippingData {
           remaining_data: data_after_header_block_aligned,
           context: "Unknown typeflag",
         })
@@ -628,7 +574,7 @@ impl TarParser {
     &mut self,
     reader: &mut Cursor<&[u8]>,
     state_skipping_data: StateSkippingData,
-  ) -> Result<ParserState, TarParserError> {
+  ) -> Result<TarParserState, TarParserError> {
     let StateSkippingData {
       remaining_data,
       context,
@@ -642,10 +588,10 @@ impl TarParser {
     let remaining_data = remaining_data - bytes_to_skip;
     Ok(if remaining_data == 0 {
       // We are done skipping unknown data, so we reset the parser state.
-      ParserState::ExpectingTarHeader
+      TarParserState::ExpectingTarHeader
     } else {
       // We still have some data to skip, so we keep the parser state.
-      ParserState::SkippingData(StateSkippingData {
+      TarParserState::SkippingData(StateSkippingData {
         remaining_data,
         context,
       })
@@ -656,7 +602,7 @@ impl TarParser {
     &mut self,
     reader: &mut Cursor<&[u8]>,
     state_parsing_gnu_long_name: StateParsingGnuLongName,
-  ) -> Result<ParserState, TarParserError> {
+  ) -> Result<TarParserState, TarParserError> {
     let StateParsingGnuLongName {
       remaining_data,
       padding_after_data: padding_after,
@@ -700,17 +646,17 @@ impl TarParser {
 
       if padding_after > 0 {
         // We have some padding after the long name, so we skip it.
-        ParserState::SkippingData(StateSkippingData {
+        TarParserState::SkippingData(StateSkippingData {
           remaining_data: padding_after,
           context: "Padding after long name",
         })
       } else {
         // We are done with the long name and there is no padding, so we reset the parser state.
-        ParserState::ExpectingTarHeader
+        TarParserState::ExpectingTarHeader
       }
     } else {
       // We still have some data to read, so we keep the parser state.
-      ParserState::ParsingGnuLongName(StateParsingGnuLongName {
+      TarParserState::ParsingGnuLongName(StateParsingGnuLongName {
         remaining_data,
         padding_after_data: padding_after,
         long_name_type,
@@ -723,7 +669,7 @@ impl TarParser {
     &mut self,
     reader: &mut Cursor<&[u8]>,
     state: StateExpectingOldGnuSparseExtendedHeader,
-  ) -> Result<ParserState, TarParserError> {
+  ) -> Result<TarParserState, TarParserError> {
     let StateExpectingOldGnuSparseExtendedHeader {
       data_after_header,
       padding_after_data,
@@ -742,12 +688,14 @@ impl TarParser {
     self.parse_old_gnu_sparse_instructions(&extended_header.sparse);
     Ok(if extended_header.parse_is_extended() {
       // If the extended header is still extended, we need to read the next block.
-      ParserState::ExpectingOldGnuSparseExtendedHeader(StateExpectingOldGnuSparseExtendedHeader {
-        data_after_header,
-        padding_after_data,
-      })
+      TarParserState::ExpectingOldGnuSparseExtendedHeader(
+        StateExpectingOldGnuSparseExtendedHeader {
+          data_after_header,
+          padding_after_data,
+        },
+      )
     } else {
-      ParserState::ReadingFileData(StateReadingFileData {
+      TarParserState::ReadingFileData(StateReadingFileData {
         remaining_data: data_after_header,
         padding_after: padding_after_data,
       })
@@ -763,20 +711,20 @@ impl Write for TarParser {
     // TODO: add loop here?
     let mut reader = Cursor::new(input_buffer);
 
-    let parser_state = core::mem::replace(&mut self.parser_state, ParserState::NoNextStateSet);
+    let parser_state = core::mem::replace(&mut self.parser_state, TarParserState::NoNextStateSet);
 
     let parse_write_result = match parser_state {
-      ParserState::ExpectingTarHeader => self.state_expecting_tar_header(&mut reader),
-      ParserState::SkippingData(state_skipping_data) => {
+      TarParserState::ExpectingTarHeader => self.state_expecting_tar_header(&mut reader),
+      TarParserState::SkippingData(state_skipping_data) => {
         self.state_skipping_data(&mut reader, state_skipping_data)
       },
-      ParserState::ParsingGnuLongName(state_parsing_gnu_long_name) => {
+      TarParserState::ParsingGnuLongName(state_parsing_gnu_long_name) => {
         self.state_parsing_gnu_long_name(&mut reader, state_parsing_gnu_long_name)
       },
-      ParserState::ExpectingOldGnuSparseExtendedHeader(state) => {
+      TarParserState::ExpectingOldGnuSparseExtendedHeader(state) => {
         self.state_expecting_old_gnu_sparse_extended_header(&mut reader, state)
       },
-      ParserState::NoNextStateSet => {
+      TarParserState::NoNextStateSet => {
         panic!("BUG: No next state set in TarParser");
       },
       _ => {

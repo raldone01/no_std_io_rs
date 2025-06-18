@@ -104,6 +104,18 @@ impl<C: Ord, T> ConfidentValue<C, T> {
     }
     self.get()
   }
+
+  pub fn update_with(&mut self, other: ConfidentValue<C, &T>) -> Option<&T>
+  where
+    T: Clone,
+  {
+    if let Some((other_confidence, other_value)) = other.value {
+      if !self.has_superior_confidence(&other_confidence) {
+        self.set(other_confidence, other_value.clone());
+      }
+    }
+    self.get()
+  }
 }
 
 impl<C: Ord, T> Default for ConfidentValue<C, T> {
