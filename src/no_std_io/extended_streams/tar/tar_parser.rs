@@ -16,8 +16,9 @@ use crate::no_std_io::{
     confident_value::ConfidentValue,
     pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
     tar_constants::{
-      CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse, GnuSparseInstruction,
-      ParseOctalError, TarHeaderChecksumError, TarTypeFlag, UstarHeaderAdditions, V7Header,
+      find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
+      GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
+      UstarHeaderAdditions, V7Header,
     },
     BlockDeviceEntry, CharacterDeviceEntry, FileEntry, FilePermissions, TarInode,
   },
@@ -632,6 +633,8 @@ impl TarParser {
     let remaining_data = remaining_data - bytes_to_read;
     Ok(if remaining_data == 0 {
       // We are done reading the long name, so we parse it.
+      let null_term = find_null_terminator_index(&collected_name);
+      collected_name.truncate(null_term);
       let long_name = String::from_utf8(collected_name);
 
       if let Ok(long_name) = long_name {

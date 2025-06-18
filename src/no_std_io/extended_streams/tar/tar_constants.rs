@@ -117,11 +117,15 @@ impl From<TarTypeFlag> for u8 {
   }
 }
 
-fn parse_null_terminated_string(bytes: &[u8]) -> Result<&str, Utf8Error> {
-  let end = bytes
+pub(crate) fn find_null_terminator_index(bytes: &[u8]) -> usize {
+  bytes
     .iter()
     .position(|&b| b == b'\0')
-    .unwrap_or(bytes.len());
+    .unwrap_or(bytes.len())
+}
+
+pub fn parse_null_terminated_string(bytes: &[u8]) -> Result<&str, Utf8Error> {
+  let end = find_null_terminator_index(bytes);
   str::from_utf8(&bytes[..end])
 }
 
