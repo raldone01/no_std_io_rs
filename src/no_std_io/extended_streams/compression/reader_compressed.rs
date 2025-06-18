@@ -100,7 +100,7 @@ impl<R: Read + ?Sized> Read for CompressedReader<'_, R> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BufferedRead as _, BufferedReader, BytewiseReader, SliceReader};
+  use crate::no_std_io::{BufferedRead as _, BufferedReader, BytewiseReader, Cursor};
 
   fn test_compressed_reader_simple_read(use_zlib: bool) {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";
@@ -110,9 +110,9 @@ mod tests {
       miniz_oxide::deflate::compress_to_vec(uncompressed_data, 6)
     };
 
-    let mut slice_reader = SliceReader::new(&compressed_data);
+    let mut slice_reader = Cursor::new(&compressed_data);
     let mut compressed_reader = CompressedReader::new(&mut slice_reader, use_zlib, 4096);
-    let mut buffered_reader = BufferedReader::new(&mut compressed_reader, 1024, 1);
+    let mut buffered_reader = BufferedReader::new(&mut compressed_reader, [0; 1024], 1);
     let bytes_read = buffered_reader
       .read_exact(uncompressed_data.len())
       .expect("Failed to read");
@@ -134,10 +134,10 @@ mod tests {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";
     let compressed_data = miniz_oxide::deflate::compress_to_vec(uncompressed_data, 6);
 
-    let mut slice_reader = SliceReader::new(&compressed_data);
+    let mut slice_reader = Cursor::new(&compressed_data);
     let mut bytewise_reader = BytewiseReader::new(&mut slice_reader);
     let mut compressed_reader = CompressedReader::new(&mut bytewise_reader, false, 4096);
-    let mut buffered_reader = BufferedReader::new(&mut compressed_reader, 1024, 1);
+    let mut buffered_reader = BufferedReader::new(&mut compressed_reader, [0; 1024], 1);
     let bytes_read = buffered_reader
       .read_exact(uncompressed_data.len())
       .unwrap_or_else(|e| panic!("Failed to read: {}", e));

@@ -14,6 +14,13 @@ use crate::no_std_io::{
   core_streams::Cursor,
   extended_streams::tar::{
     tar_constants::{
+      pax_keys_well_known::gnu::{GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE},
+      GnuSparseInstruction, ParseOctalError, TarTypeFlag,
+    },
+    TarInode,
+  },
+  extended_streams::tar::{
+    tar_constants::{
       pax_keys_well_known::{
         gnu::{GNU_SPARSE_NAME, GNU_SPARSE_REALSIZE, GNU_SPARSE_REALSIZE_OLD},
         PATH,
@@ -23,17 +30,7 @@ use crate::no_std_io::{
     },
     BlockDeviceEntry, CharacterDeviceEntry, FileEntry, FilePermissions,
   },
-  BufferedRead as _, ReadExactError,
-};
-use crate::no_std_io::{
-  extended_streams::tar::{
-    tar_constants::{
-      pax_keys_well_known::gnu::{GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE},
-      GnuSparseInstruction, ParseOctalError, TarTypeFlag,
-    },
-    TarInode,
-  },
-  Write,
+  BufferedRead as _, ReadExactError, Write,
 };
 
 #[derive(Error, Debug, PartialEq, Eq)]

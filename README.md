@@ -16,6 +16,7 @@ Features of this crate:
 * Add feature to opt in to time dependency.
 * Fix clippy lints
 * Add `alloc` feature
+* Add doc comments with examples to all public functions and structs.
 
 # TODO no_std_io:
 
