@@ -3,19 +3,6 @@ use alloc::{string::String, vec::Vec};
 use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
 
-#[derive(Default)]
-pub struct TarInodeBuilder {
-  pub path: Option<RelativePathBuf>,
-  pub entry: Option<FileEntry>,
-  pub mode: Option<FilePermissions>,
-  pub uid: Option<u32>,
-  pub gid: Option<u32>,
-  pub mtime: Option<u64>,
-  pub uname: Option<String>,
-  pub gname: Option<String>,
-  pub unparsed_extended_attributes: HashMap<String, String>,
-}
-
 pub struct TarInode {
   pub path: RelativePathBuf,
   pub entry: FileEntry,
