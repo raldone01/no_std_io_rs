@@ -6,7 +6,7 @@ pub struct ForkedBufferedReader<'a, R: BufferedRead + ?Sized> {
   position: usize,
 }
 
-impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> ForkedBufferedReader<'a, R> {
+impl<'a, R: BufferedRead + ?Sized> ForkedBufferedReader<'a, R> {
   #[must_use]
   pub fn new(buffered_reader: &'a mut R, start_position: usize) -> Self {
     Self {
@@ -24,19 +24,21 @@ impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> ForkedBufferedRead
   }
 }
 
-impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> BufferedRead
-  for ForkedBufferedReader<'a, R>
-{
-  type BackingImplementation = R::BackingImplementation;
+impl<'a, R: BufferedRead + ?Sized> BufferedRead for ForkedBufferedReader<'a, R> {
+  type UnderlyingReadExactError = R::UnderlyingReadExactError;
+  type ForkedBufferedReaderImplementation<'b>
+    = ForkedBufferedReader<'b, R>
+  where
+    Self: 'b;
 
-  fn fork_reader(&mut self) -> ForkedBufferedReader<'_, Self::BackingImplementation> {
+  fn fork_reader(&mut self) -> Self::ForkedBufferedReaderImplementation<'_> {
     ForkedBufferedReader::new(self.buffered_reader, self.position)
   }
 
   fn skip(
     &mut self,
     byte_count: usize,
-  ) -> Result<(), ReadExactError<<Self::BackingImplementation as Read>::ReadError>> {
+  ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>> {
     self.read_exact(byte_count).map(|_| ())
   }
 
@@ -47,7 +49,7 @@ impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> BufferedRead
   fn read_exact(
     &mut self,
     byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<<Self::BackingImplementation as Read>::ReadError>> {
+  ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>> {
     let full_buffer = self
       .buffered_reader
       .peek_exact(self.position + byte_count)?;
@@ -59,7 +61,7 @@ impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> BufferedRead
   fn peek_exact(
     &mut self,
     byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<<Self::BackingImplementation as Read>::ReadError>> {
+  ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>> {
     let full_buffer = self
       .buffered_reader
       .peek_exact(self.position + byte_count)?;
@@ -67,8 +69,8 @@ impl<'a, R: BufferedRead<BackingImplementation = R> + ?Sized> BufferedRead
   }
 }
 
-impl<R: BufferedRead<BackingImplementation = R> + ?Sized> Read for ForkedBufferedReader<'_, R> {
-  type ReadError = ReadExactError<<R::BackingImplementation as Read>::ReadError>;
+impl<R: BufferedRead + ?Sized> Read for ForkedBufferedReader<'_, R> {
+  type ReadError = ReadExactError<R::UnderlyingReadExactError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     if output_buffer.is_empty() {

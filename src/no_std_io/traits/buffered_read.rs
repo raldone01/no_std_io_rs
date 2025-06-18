@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::no_std_io::{ForkedBufferedReader, Read};
+use crate::no_std_io::Read;
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ReadExactError<U> {
@@ -22,20 +22,20 @@ pub enum ReadExactError<U> {
 ///
 /// This is the equivalent of `std::io::BufReader`.
 pub trait BufferedRead: Read {
-  /// When implementing this trait, this should be set to `Self`.
-  type BackingImplementation: BufferedRead + ?Sized;
+  type UnderlyingReadExactError;
+  type ForkedBufferedReaderImplementation<'a>: BufferedRead + ?Sized
+  where
+    Self: 'a;
 
   /// Creates a forked reader that can read from the same underlying data without consuming it.
   #[must_use]
-  fn fork_reader<'this>(
-    &'this mut self,
-  ) -> ForkedBufferedReader<'this, Self::BackingImplementation>;
+  fn fork_reader(&mut self) -> Self::ForkedBufferedReaderImplementation<'_>;
 
   /// Consumes `byte_count` bytes from the underlying reader potentially avoiding a copy to the internal buffer.
   fn skip(
     &mut self,
     byte_count: usize,
-  ) -> Result<(), ReadExactError<<Self::BackingImplementation as Read>::ReadError>>;
+  ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>>;
 
   /// Returns the size of the internal buffer.
   #[must_use]
@@ -45,13 +45,13 @@ pub trait BufferedRead: Read {
   fn read_exact(
     &mut self,
     byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<<Self::BackingImplementation as Read>::ReadError>>;
+  ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>>;
 
   /// Peeks exactly `byte_count` bytes from the underlying reader without consuming them.
   fn peek_exact(
     &mut self,
     byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<<Self::BackingImplementation as Read>::ReadError>>;
+  ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>>;
 }
 
 pub struct BufferedReadByteIterator<'a, R: BufferedRead + ?Sized> {
@@ -59,8 +59,7 @@ pub struct BufferedReadByteIterator<'a, R: BufferedRead + ?Sized> {
 }
 
 impl<'a, R: BufferedRead + ?Sized> Iterator for BufferedReadByteIterator<'a, R> {
-  type Item =
-    Result<u8, ReadExactError<<<R as BufferedRead>::BackingImplementation as Read>::ReadError>>;
+  type Item = Result<u8, ReadExactError<R::UnderlyingReadExactError>>;
 
   fn next(&mut self) -> Option<Self::Item> {
     match self.buffered_read.read_exact(1) {

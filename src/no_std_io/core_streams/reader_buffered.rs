@@ -152,16 +152,18 @@ impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
 }
 
 impl<R: Read, B: BackingBuffer> BufferedRead for BufferedReader<R, B> {
-  type BackingImplementation = Self;
+  type UnderlyingReadExactError = Self::ReadError;
+  type ForkedBufferedReaderImplementation<'a>
+    = ForkedBufferedReader<'a, Self>
+  where
+    R: 'a,
+    B: 'a;
 
-  fn fork_reader(&mut self) -> ForkedBufferedReader<'_, Self::BackingImplementation> {
+  fn fork_reader(&mut self) -> Self::ForkedBufferedReaderImplementation<'_> {
     ForkedBufferedReader::new(self, 0)
   }
 
-  fn skip(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<(), ReadExactError<<Self::BackingImplementation as Read>::ReadError>> {
+  fn skip(&mut self, byte_count: usize) -> Result<(), ReadExactError<Self::ReadError>> {
     self
       .read_exact_internal(byte_count, true, false)
       .map(|_| ())
@@ -171,17 +173,11 @@ impl<R: Read, B: BackingBuffer> BufferedRead for BufferedReader<R, B> {
     self.buffer.as_ref().len()
   }
 
-  fn read_exact(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<<Self::BackingImplementation as Read>::ReadError>> {
+  fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<Self::ReadError>> {
     self.read_exact_internal(byte_count, false, false)
   }
 
-  fn peek_exact(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<<Self::BackingImplementation as Read>::ReadError>> {
+  fn peek_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<Self::ReadError>> {
     self.read_exact_internal(byte_count, false, true)
   }
 }
