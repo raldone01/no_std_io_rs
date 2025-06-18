@@ -17,8 +17,8 @@ use crate::no_std_io::{
     tar_constants::{
       pax_keys_well_known::{
         gnu::{
-          GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE, GNU_SPARSE_NAME,
-          GNU_SPARSE_REALSIZE, GNU_SPARSE_REALSIZE_OLD,
+          GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_NAME_01_01,
+          GNU_SPARSE_REALSIZE_0_01, GNU_SPARSE_REALSIZE_1_0,
         },
         PATH,
       },
@@ -53,7 +53,7 @@ enum TarConfidence {
   Pax,
 }
 
-struct SparseFileInstruction {
+pub(crate) struct SparseFileInstruction {
   offset_before: u64,
   data_size: u64,
 }
@@ -82,8 +82,10 @@ struct PaxState {
 impl PaxState {
   fn preload_parsed_attributes(&mut self) {
     // Since these attributes are completely broken anyway, we don't want the user to ever see them.
-    const ALWAYS_PARSED_ATTRIBUTES: &[&str] =
-      &[GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE];
+    const ALWAYS_PARSED_ATTRIBUTES: &[&str] = &[
+      GNU_SPARSE_DATA_BLOCK_OFFSET_0_0,
+      GNU_SPARSE_DATA_BLOCK_SIZE_0_0,
+    ];
     for key in ALWAYS_PARSED_ATTRIBUTES {
       self.parsed_attributes.insert(key.to_string(), ());
     }
@@ -287,7 +289,7 @@ impl TarParser {
       .get_or_set_with(parse_confidence, || {
         self
           .pax_state
-          .get_attribute(GNU_SPARSE_NAME)
+          .get_attribute(GNU_SPARSE_NAME_01_01)
           .map(RelativePathBuf::from)
       });
     self
@@ -305,7 +307,7 @@ impl TarParser {
       .get_or_set_with(parse_confidence, || {
         self
           .pax_state
-          .get_attribute(GNU_SPARSE_REALSIZE)
+          .get_attribute(GNU_SPARSE_REALSIZE_1_0)
           .and_then(|s| s.parse().ok())
       });
     self
@@ -314,7 +316,7 @@ impl TarParser {
       .get_or_set_with(parse_confidence, || {
         self
           .pax_state
-          .get_attribute(GNU_SPARSE_REALSIZE_OLD)
+          .get_attribute(GNU_SPARSE_REALSIZE_0_01)
           .and_then(|s| s.parse().ok())
       });
   }

@@ -419,30 +419,32 @@ pub mod pax_keys_well_known {
   /// The map is padded to the next 512 byte block boundary.
   pub mod gnu {
     /// Overrides the `name` field of the header. (0.0, 0.1, 1.0)
-    pub const GNU_SPARSE_NAME: &str = "GNU.sparse.name";
+    pub const GNU_SPARSE_NAME_01_01: &str = "GNU.sparse.name";
     /// Overrides the real size of the file. (1.0)
-    pub const GNU_SPARSE_REALSIZE: &str = "GNU.sparse.realsize";
+    pub const GNU_SPARSE_REALSIZE_1_0: &str = "GNU.sparse.realsize";
     /// Version 1.0 this is the 1
     pub const GNU_SPARSE_MAJOR: &str = "GNU.sparse.major";
     /// Version 1.0 this is the 0
     pub const GNU_SPARSE_MINOR: &str = "GNU.sparse.minor";
 
     /// Overrides the real size of the file for old GNU sparse files. (0.0, 0.1)
-    pub const GNU_SPARSE_REALSIZE_OLD: &str = "GNU.sparse.size";
+    pub const GNU_SPARSE_REALSIZE_0_01: &str = "GNU.sparse.size";
     /// Number of blocks in the sparse map. (0.0, 0.1)
     /// After that the following fields are repeated numblocks times:
     /// * GNU_SPARSE_DATA_BLOCK_OFFSET
     /// * GNU_SPARSE_DATA_BLOCK_SIZE
-    pub const GNU_SPARSE_MAP_NUM_BLOCKS: &str = "GNU.sparse.numblocks";
-    /// Offset of the data block. (0.0, 0.1)
-    pub const GNU_SPARSE_DATA_BLOCK_OFFSET: &str = "GNU.sparse.offset";
-    /// Size of the data block. (0.0, 0.1)
-    pub const GNU_SPARSE_DATA_BLOCK_SIZE: &str = "GNU.sparse.numbytes";
+    pub const GNU_SPARSE_MAP_NUM_BLOCKS_0_01: &str = "GNU.sparse.numblocks";
+    /// Offset of the data block. (0.0)
+    pub const GNU_SPARSE_DATA_BLOCK_OFFSET_0_0: &str = "GNU.sparse.offset";
+    /// Size of the data block. (0.0)
+    pub const GNU_SPARSE_DATA_BLOCK_SIZE_0_0: &str = "GNU.sparse.numbytes";
     /// The sparse map is a series of comma-separated values
-    /// in the format `offset,size[,offset:size,...]`
-    pub const GNU_SPARSE_MAP: &str = "GNU.sparse.map";
+    /// in the format `offset,size[,offset:size,...]` (0.1)
+    pub const GNU_SPARSE_MAP_0_1: &str = "GNU.sparse.map";
   }
   pub const ATIME: &str = "atime";
+  /// The character set used to encode the file.
+  /// We don't care about this field.
   pub const CHARSET: &str = "charset";
   pub const COMMENT: &str = "comment";
   /// Overrides the gid for files whose id is greater than `2 097 151 (octal 7 777 777)`.
