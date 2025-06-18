@@ -9,3 +9,6 @@ pub use tar_inode::*;
 
 //#[cfg(test)]
 //mod tar_test;
+
+mod confident_value;
+mod pax_parser;
