@@ -8,7 +8,7 @@ use crate::no_std_io::{
 ///
 /// To be generic over any buffered reader implementation, consider being generic over the [`BufferedRead`](crate::no_std_io::BufferedRead) trait instead.
 pub struct BufferedReader<R: Read, B: BackingBuffer> {
-  source: R,
+  source_reader: R,
   buffer: B,
   last_user_read: usize,
   bytes_in_buffer: usize,
@@ -26,10 +26,10 @@ pub enum BufferedReaderReadError<U, RU> {
 impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
   /// Creates a new buffered reader with the given source and buffer.
   #[must_use]
-  pub fn new(source: R, buffer: B, read_chunk_size: usize) -> Self {
+  pub fn new(source: R, internal_buffer: B, read_chunk_size: usize) -> Self {
     Self {
-      source,
-      buffer,
+      source_reader: source,
+      buffer: internal_buffer,
       last_user_read: 0,
       bytes_in_buffer: 0,
       read_chunk_size,
@@ -80,7 +80,7 @@ impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
     while self.bytes_in_buffer < byte_count {
       // Read more data into the buffer.
       let bytes_read = self
-        .source
+        .source_reader
         .read(&mut self.buffer.as_mut()[self.bytes_in_buffer..])
         .map_err(|e| ReadExactError::Io(BufferedReaderReadError::Io(e)))?;
       self.bytes_in_buffer += bytes_read;
@@ -126,7 +126,7 @@ impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
     let remaining_bytes = output_buffer.len() - bytes_read_from_internal_buffer;
     if remaining_bytes > self.read_chunk_size {
       let additional_bytes = self
-        .source
+        .source_reader
         .read(&mut output_buffer[bytes_read_from_internal_buffer..])?;
       return Ok(bytes_read_from_internal_buffer + additional_bytes);
     }

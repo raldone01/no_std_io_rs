@@ -1,13 +1,12 @@
-use alloc::{vec, vec::Vec};
 use thiserror::Error;
 
 use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
 
 /// A buffered writer accumulates data until it reaches a certain size before writing it to the target writer.
-pub struct BufferedWriter<'a, W: Write + ?Sized> {
-  target_writer: &'a mut W,
-  buffer: Vec<u8>,
-  pos: usize,
+pub struct BufferedWriter<W: Write, B: AsMut<[u8]>> {
+  target_writer: W,
+  buffer: B,
+  position: usize,
   always_chunk: bool,
 }
 
@@ -19,32 +18,32 @@ pub enum BufferedWriterWriteError<WWE, WFE> {
   IoFlush(WFE),
 }
 
-impl<'a, W: Write + ?Sized> BufferedWriter<'a, W> {
+impl<W: Write, B: AsMut<[u8]>> BufferedWriter<W, B> {
   /// Creates a new `BufferedWriter` with the specified chunk buffer size.
   #[must_use]
-  pub fn new(target_writer: &'a mut W, chunk_buffer_size: usize, always_chunk: bool) -> Self {
+  pub fn new(target_writer: W, internal_buffer: B, always_chunk: bool) -> Self {
     Self {
       target_writer,
-      buffer: vec![0; chunk_buffer_size],
-      pos: 0,
+      buffer: internal_buffer,
+      position: 0,
       always_chunk,
     }
   }
 
   /// Flushes the internal buffer to the target writer.
   fn flush_buffer(&mut self, sync_hint: bool) -> Result<(), WriteAllError<W::WriteError>> {
-    if self.pos == 0 {
+    if self.position == 0 {
       return Ok(());
     }
     self
       .target_writer
-      .write_all(&self.buffer[..self.pos], sync_hint)?;
-    self.pos = 0;
+      .write_all(&self.buffer.as_mut()[..self.position], sync_hint)?;
+    self.position = 0;
     Ok(())
   }
 }
 
-impl<'a, W: Write + ?Sized> Write for BufferedWriter<'a, W> {
+impl<W: Write, B: AsMut<[u8]>> Write for BufferedWriter<W, B> {
   type WriteError = BufferedWriterWriteError<W::WriteError, W::FlushError>;
   type FlushError = BufferedWriterWriteError<W::WriteError, W::FlushError>;
 
@@ -53,7 +52,7 @@ impl<'a, W: Write + ?Sized> Write for BufferedWriter<'a, W> {
       return Ok(0);
     }
 
-    if !self.always_chunk && (input_buffer.len() + self.pos > self.buffer.len()) {
+    if !self.always_chunk && (input_buffer.len() + self.position > self.buffer.as_mut().len()) {
       // Flush the current buffer
       self
         .flush_buffer(sync_hint)
@@ -67,11 +66,14 @@ impl<'a, W: Write + ?Sized> Write for BufferedWriter<'a, W> {
     }
 
     // Copy the input buffer into the internal buffer
-    let bytes_to_write = core::cmp::min(input_buffer.len(), self.buffer.len() - self.pos);
-    self.buffer[self.pos..self.pos + bytes_to_write]
+    let bytes_to_write = core::cmp::min(
+      input_buffer.len(),
+      self.buffer.as_mut().len() - self.position,
+    );
+    self.buffer.as_mut()[self.position..self.position + bytes_to_write]
       .copy_from_slice(&input_buffer[..bytes_to_write]);
-    self.pos += bytes_to_write;
-    if self.pos == self.buffer.len() {
+    self.position += bytes_to_write;
+    if self.position == self.buffer.as_mut().len() {
       // If the buffer is full, flush it
       self
         .flush_buffer(sync_hint)
@@ -102,7 +104,7 @@ mod tests {
     let input_data = b"Hello, world! This is a test of the BufferedWriter.";
     let mut buffer_writer = Cursor::new([0; 128]);
     let mut bytewise_writer = BytewiseWriter::new(&mut buffer_writer);
-    let mut buffered_writer = BufferedWriter::new(&mut bytewise_writer, 20, true);
+    let mut buffered_writer = BufferedWriter::new(&mut bytewise_writer, [0; 20], true);
     buffered_writer
       .write_all(input_data, false)
       .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
@@ -117,7 +119,7 @@ mod tests {
   fn test_buffered_writer_chunks_correctly_chunk_when_necessary() {
     let input_data = b"Hello, world! This is a test of the BufferedWriter.";
     let mut buffer_writer = Cursor::new([0; 128]);
-    let mut buffered_writer = BufferedWriter::new(&mut buffer_writer, 20, false);
+    let mut buffered_writer = BufferedWriter::new(&mut buffer_writer, [0; 20], false);
     buffered_writer
       .write_all(&input_data[..30], false)
       .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
