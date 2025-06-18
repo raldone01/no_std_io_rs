@@ -9,6 +9,7 @@ pub enum ReadExactError<U> {
   )]
   UnexpectedEof {
     bytes_requested: usize,
+    /// At least this many bytes can still be read from the underlying reader.
     min_readable_bytes: usize,
   },
   #[error("Underlying read error: {0:?}")]

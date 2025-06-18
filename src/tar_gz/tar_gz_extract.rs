@@ -53,59 +53,6 @@ struct PaxState {
   parsed_attributes: HashMap<String, ()>,
 }
 
-impl PaxState {
-  fn preload_parsed_attributes(&mut self) {
-    // Since these attributes are completely broken anyway, we don't want the user to ever see them.
-    const ALWAYS_PARSED_ATTRIBUTES: &[&str] =
-      &[GNU_SPARSE_DATA_BLOCK_OFFSET, GNU_SPARSE_DATA_BLOCK_SIZE];
-    for key in ALWAYS_PARSED_ATTRIBUTES {
-      self.parsed_attributes.insert(key.to_string(), ());
-    }
-  }
-
-  #[must_use]
-  fn new(initial_global_extended_attributes: HashMap<String, String>) -> Self {
-    let mut selv = Self {
-      global_extended_attributes: initial_global_extended_attributes,
-      attributes: Vec::new(),
-      parsed_attributes: HashMap::new(),
-    };
-    selv.preload_parsed_attributes();
-    selv
-  }
-
-  fn reset_local(&mut self) {
-    self.attributes.clear();
-    self.parsed_attributes.clear();
-    self.preload_parsed_attributes();
-  }
-
-  fn get_attribute(&mut self, key: &str) -> Option<&String> {
-    if self.parsed_attributes.get(key).is_none() {
-      // TODO: interning the key would be more efficient
-      self.parsed_attributes.insert(key.to_string(), ());
-    }
-    let local_attr = self
-      .attributes
-      .iter()
-      .rev()
-      .find_map(|(k, v)| if k == key { Some(v) } else { None });
-    local_attr.or_else(|| self.global_extended_attributes.get(key))
-  }
-
-  fn get_unparsed_extended_attributes(&mut self) -> HashMap<String, String> {
-    let mut unparsed = HashMap::new();
-    for (key, value) in &self.attributes {
-      if !self.parsed_attributes.contains_key(key) {
-        unparsed.insert(key.clone(), value.clone());
-      }
-    }
-    unparsed
-  }
-}
-
-trait FileNamePredicate: for<'a> Fn(&'a str) + Clone {}
-
 pub struct TarParseOptions {
   /// Tar can contain previous versions of the same file.
   ///
@@ -165,8 +112,8 @@ pub fn parse_tar_file<'a, R: BufferedRead<'a>>(
   // TODO: detect and handle gzip header also handle the case where the input is not gzipped
 
   let mut extracted_files = Vec::<TarInode>::new();
-  // Stores the index of each file in `extracted_files`.
-  // Used for keeping only the last version of each file.
+  /// Stores the index of each file in `extracted_files`.
+  /// Used for keeping only the last version of each file.
   let mut seen_files = HashMap::<RelativePathBuf, usize>::new();
   let mut found_type_flags = HashMap::<TarTypeFlag, usize>::new();
 
