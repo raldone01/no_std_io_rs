@@ -18,9 +18,10 @@ use crate::no_std_io::{
   Cursor,
 };
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum PaxConfidence {
   GLOBAL = 1,
+  #[default]
   LOCAL,
 }
 
@@ -128,6 +129,7 @@ pub struct PaxParser {
 
   // state
   state: PaxParserState,
+  current_pax_mode: PaxConfidence,
   sparse_instruction_builder: SparseFileInstructionBuilder,
 }
 
@@ -221,7 +223,7 @@ impl PaxParser {
       .update_with(Self::to_confident_value(self.uname.get_with_confidence()));
   }
 
-  pub fn recover(&mut self) {
+  pub fn recover(&mut self, pax_mode: PaxConfidence) {
     // Reset the local unparsed attributes
     self.unparsed_attributes.clear();
     // Reset all parsed local attributes
@@ -242,6 +244,7 @@ impl PaxParser {
 
     // Reset the parser state to default
     self.state = PaxParserState::default();
+    self.current_pax_mode = pax_mode;
     self.sparse_instruction_builder = Default::default();
   }
 
@@ -501,30 +504,100 @@ impl PaxParser {
   fn state_parsing_key(
     &mut self,
     cursor: &mut Cursor<&[u8]>,
+    mut state: StateParsingKey,
   ) -> Result<PaxParserState, TarParserError> {
-    todo!()
+    while cursor.position() < cursor.full_buffer().len() {
+      if state.length == 0 {
+        // We've consumed the entire record length but haven't found the '='
+        return Err(TarParserError::CorruptPaxKey);
+      }
+
+      let byte = cursor.full_buffer()[cursor.position()];
+      cursor.set_position(cursor.position() + 1);
+      state.length -= 1;
+
+      if byte == b'=' {
+        let key = String::from_utf8(state.keyword).map_err(|_| TarParserError::CorruptPaxKey)?;
+
+        return Ok(PaxParserState::ParsingValue(StateParsingValue {
+          key,
+          length_after_equals: state.length,
+          value: Vec::new(),
+        }));
+      } else {
+        state.keyword.push(byte);
+      }
+    }
+
+    // Not enough data in the current `bytes` slice, preserve state and wait for more.
+    Ok(PaxParserState::ParsingKey(state))
   }
 
   fn state_parsing_value(
     &mut self,
     cursor: &mut Cursor<&[u8]>,
+    mut state: StateParsingValue,
   ) -> Result<PaxParserState, TarParserError> {
-    todo!()
+    if state.length_after_equals == 0 {
+      // Record must end in a newline, so length of value part must be at least 1.
+      return Err(TarParserError::CorruptPaxValue);
+    }
+
+    let value_len = state.length_after_equals - 1;
+    let bytes_needed = value_len.saturating_sub(state.value.len());
+
+    let bytes_available = cursor.full_buffer().len() - cursor.position();
+    let bytes_to_read = bytes_needed.min(bytes_available);
+
+    if bytes_to_read > 0 {
+      let start = cursor.position();
+      let end = start + bytes_to_read;
+      state
+        .value
+        .extend_from_slice(&cursor.full_buffer()[start..end]);
+      cursor.set_position(end);
+    }
+
+    // Check if we have the full value now
+    if state.value.len() < value_len {
+      // Not enough data, preserve state
+      return Ok(PaxParserState::ParsingValue(state));
+    }
+
+    // We have the value, now we need the trailing newline
+    if cursor.position() >= cursor.full_buffer().len() {
+      // Not enough data for the newline, preserve state
+      return Ok(PaxParserState::ParsingValue(state));
+    }
+
+    let newline_char = cursor.full_buffer()[cursor.position()];
+    if newline_char != b'\n' {
+      return Err(TarParserError::CorruptPaxValue);
+    }
+    cursor.set_position(cursor.position() + 1);
+
+    // We have a full key-value pair. Ingest it.
+    let value = String::from_utf8(state.value).map_err(|_| TarParserError::CorruptPaxValue)?;
+
+    self.ingest_attribute(self.current_pax_mode, state.key, value);
+
+    // Ready for the next key-value pair
+    Ok(PaxParserState::ExpectingNextKV)
   }
 
-  pub fn parse_bytes(
-    &mut self,
-    bytes: &[u8],
-    pax_mode: PaxConfidence,
-  ) -> Result<usize, TarParserError> {
+  pub fn parse_bytes(&mut self, bytes: &[u8]) -> Result<usize, TarParserError> {
     let mut cursor = Cursor::new(bytes);
 
     let parser_state = core::mem::replace(&mut self.state, PaxParserState::NoNextStateSet);
 
     self.state = match parser_state {
       PaxParserState::ExpectingNextKV => self.state_expecting_next_kv(&mut cursor)?,
-      PaxParserState::ParsingKey(state_parsing_key) => self.state_parsing_key(&mut cursor)?,
-      PaxParserState::ParsingValue(state_parsing_value) => self.state_parsing_value(&mut cursor)?,
+      PaxParserState::ParsingKey(state_parsing_key) => {
+        self.state_parsing_key(&mut cursor, state_parsing_key)?
+      },
+      PaxParserState::ParsingValue(state_parsing_value) => {
+        self.state_parsing_value(&mut cursor, state_parsing_value)?
+      },
       PaxParserState::NoNextStateSet => {
         panic!("BUG: No next state set in PaxParser");
       },

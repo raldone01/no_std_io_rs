@@ -39,6 +39,10 @@ pub enum TarParserError {
   CorruptHeaderMagicVersion { magic: [u8; 6], version: [u8; 2] },
   #[error("Corrupt pax length")]
   CorruptPaxLength,
+  #[error("Corrupt pax key")]
+  CorruptPaxKey,
+  #[error("Corrupt pax value")]
+  CorruptPaxValue,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -539,7 +543,7 @@ impl TarParser {
       }),
       TarTypeFlag::Fifo => self.finish_inode(|_| FileEntry::Fifo),
       TarTypeFlag::PaxExtendedHeader => {
-        self.pax_parser.recover();
+        self.pax_parser.recover(PaxConfidence::LOCAL);
         TarParserState::ParsingPaxData(StateParsingPaxData {
           remaining_data: data_after_header,
           padding_after: padding_after_data,
@@ -547,7 +551,7 @@ impl TarParser {
         })
       },
       TarTypeFlag::PaxGlobalExtendedHeader => {
-        self.pax_parser.recover();
+        self.pax_parser.recover(PaxConfidence::GLOBAL);
         TarParserState::ParsingPaxData(StateParsingPaxData {
           remaining_data: data_after_header,
           padding_after: padding_after_data,
