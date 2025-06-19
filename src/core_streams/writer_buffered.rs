@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
+use crate::{Write, WriteAll as _, WriteAllError};
 
 /// A buffered writer accumulates data until it reaches a certain size before writing it to the target writer.
 pub struct BufferedWriter<W: Write, B: AsMut<[u8]>> {
@@ -97,7 +97,7 @@ impl<W: Write, B: AsMut<[u8]>> Write for BufferedWriter<W, B> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BytewiseWriter, Cursor};
+  use crate::{BytewiseWriter, Cursor};
 
   #[test]
   fn test_buffered_writer_chunks_correctly_always_chunk() {

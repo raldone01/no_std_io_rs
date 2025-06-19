@@ -1,4 +1,4 @@
-use crate::no_std_io::Write;
+use crate::Write;
 
 /// A writer that writes data byte by byte, useful for testing.
 pub struct BytewiseWriter<'a, W: Write + ?Sized> {
@@ -41,7 +41,7 @@ mod tests {
 
   use alloc::vec::Vec;
 
-  use crate::no_std_io::Cursor;
+  use crate::Cursor;
 
   #[test]
   fn test_bytewise_writer_writes_correctly() {

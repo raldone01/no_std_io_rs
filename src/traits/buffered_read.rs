@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::no_std_io::Read;
+use crate::Read;
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ReadExactError<U> {

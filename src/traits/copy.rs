@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::no_std_io::{Read, Write, WriteAll as _, WriteAllError};
+use crate::{Read, Write, WriteAll as _, WriteAllError};
 
 /// Reads all bytes from the `reader` and writes them to the `writer`.
 ///

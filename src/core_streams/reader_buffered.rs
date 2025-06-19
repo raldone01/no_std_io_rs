@@ -1,12 +1,10 @@
 use thiserror::Error;
 
-use crate::no_std_io::{
-  BackingBuffer, BufferedRead, ForkedBufferedReader, Read, ReadExactError, ResizeError,
-};
+use crate::{BackingBuffer, BufferedRead, ForkedBufferedReader, Read, ReadExactError, ResizeError};
 
 /// A buffered reader can be used to add buffering to any reader.
 ///
-/// To be generic over any buffered reader implementation, consider being generic over the [`BufferedRead`](crate::no_std_io::BufferedRead) trait instead.
+/// To be generic over any buffered reader implementation, consider being generic over the [`BufferedRead`](crate::BufferedRead) trait instead.
 pub struct BufferedReader<R: Read, B: BackingBuffer> {
   source_reader: R,
   buffer: B,
@@ -186,7 +184,7 @@ impl<R: Read, B: BackingBuffer> BufferedRead for BufferedReader<R, B> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BytewiseReader, Cursor, FixedSizeBufferError};
+  use crate::{BytewiseReader, Cursor, FixedSizeBufferError};
 
   #[test]
   fn test_buffered_reader_exact_correct() {

@@ -1,6 +1,6 @@
 use core::convert::Infallible;
 
-use crate::no_std_io::{Read, Write};
+use crate::{Read, Write};
 
 /// [`EmptyStream`] ignores any data written via [`Write`], and will always be empty (returning zero bytes) when read via [`Read`].
 ///
@@ -40,7 +40,7 @@ impl Read for EmptyStream {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::WriteAll as _;
+  use crate::WriteAll as _;
 
   #[test]
   fn test_empty_write() {

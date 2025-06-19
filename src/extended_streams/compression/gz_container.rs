@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
+use crate::{Write, WriteAll as _, WriteAllError};
 
 const ID1: u8 = 0x1F;
 const ID2: u8 = 0x8B;

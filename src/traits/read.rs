@@ -2,7 +2,7 @@ use core::cell::{Cell, RefCell, UnsafeCell};
 
 use alloc::boxed::Box;
 
-use crate::no_std_io::{advance, LimitedReader};
+use crate::{advance, LimitedReader};
 
 /// Trait for reading bytes.
 pub trait Read {

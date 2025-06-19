@@ -8,7 +8,7 @@ use miniz_oxide::{
 };
 use thiserror::Error;
 
-use crate::no_std_io::Read;
+use crate::Read;
 
 pub struct CompressedReader<'a, R: Read + ?Sized> {
   source_reader: &'a mut R,
@@ -100,7 +100,7 @@ impl<R: Read + ?Sized> Read for CompressedReader<'_, R> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BufferedRead as _, BufferedReader, BytewiseReader, Cursor};
+  use crate::{BufferedRead as _, BufferedReader, BytewiseReader, Cursor};
 
   fn test_compressed_reader_simple_read(use_zlib: bool) {
     let uncompressed_data = b"Hello, world! This is a test of the CompressedReader.";

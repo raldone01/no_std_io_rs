@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::no_std_io::Write;
+use crate::Write;
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum WriteAllError<U> {

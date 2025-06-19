@@ -1,4 +1,4 @@
-# bidir-tar-gz-rs
+# no_std_io
 
 Features of this crate:
 * Create uncompressed and compressed tarballs. (`ustar` only)

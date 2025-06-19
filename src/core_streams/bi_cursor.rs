@@ -2,7 +2,7 @@ use core::convert::Infallible;
 
 use thiserror::Error;
 
-use crate::no_std_io::{
+use crate::{
   BackingBuffer, BufferedRead, ForkedBufferedReader, Read, ReadExactError, ResizeError, Seek,
   SeekFrom, Write,
 };
@@ -260,7 +260,7 @@ impl<B: BackingBuffer> Write for Cursor<B> {
 mod tests {
   use alloc::vec::Vec;
 
-  use crate::no_std_io::FixedSizeBufferError;
+  use crate::FixedSizeBufferError;
 
   use super::*;
 

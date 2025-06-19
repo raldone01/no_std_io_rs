@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
 
-use crate::no_std_io::{
+use crate::{
   extended_streams::tar::{
     confident_value::ConfidentValue,
     tar_constants::pax_keys_well_known::{
@@ -612,7 +612,7 @@ mod tests {
 
   use alloc::{string::ToString as _, vec};
 
-  use crate::no_std_io::{WriteAll as _, WriteAllError};
+  use crate::{WriteAll as _, WriteAllError};
 
   #[test]
   fn test_new_with_initial_global_attributes() {

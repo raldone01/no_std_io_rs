@@ -3,7 +3,7 @@ use core::str::Utf8Error;
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::no_std_io::extended_streams::tar::FilePermissions;
+use crate::extended_streams::tar::FilePermissions;
 
 // --- Constants for the TAR Header Format ---
 pub const BLOCK_SIZE: usize = 512;

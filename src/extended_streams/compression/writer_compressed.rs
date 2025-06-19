@@ -9,7 +9,7 @@ use miniz_oxide::{
 };
 use thiserror::Error;
 
-use crate::no_std_io::{Write, WriteAll as _, WriteAllError};
+use crate::{Write, WriteAll as _, WriteAllError};
 
 /// Don't forget to call `finish()` when done to finalize the compression and flush any remaining data.
 pub struct CompressedWriter<'a, W: Write + ?Sized> {
@@ -139,7 +139,7 @@ impl<W: Write + ?Sized> Write for CompressedWriter<'_, W> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{BytewiseWriter, Cursor};
+  use crate::{BytewiseWriter, Cursor};
 
   #[test]
   fn test_compressed_writer_buffer_size_dynamic_questionmark() {

@@ -3,7 +3,7 @@ use core::cell::{Cell, RefCell, UnsafeCell};
 use alloc::boxed::Box;
 use thiserror::Error;
 
-use crate::no_std_io::{advance, LimitedWriter};
+use crate::{advance, LimitedWriter};
 
 /// Trait for writing bytes.
 pub trait Write {

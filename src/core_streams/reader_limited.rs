@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::no_std_io::Read;
+use crate::Read;
 
 /// A reader that only reads up to a specified limit.
 /// This is useful when handling user input to prevent resource exhaustion attacks.
@@ -64,7 +64,7 @@ impl<'a, R: Read + ?Sized> Read for LimitedReader<'a, R> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::Cursor;
+  use crate::Cursor;
 
   #[test]
   fn test_limited_reader() {

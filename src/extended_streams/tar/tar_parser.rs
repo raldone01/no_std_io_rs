@@ -10,7 +10,7 @@ use relative_path::RelativePathBuf;
 use thiserror::Error;
 use zerocopy::FromBytes as _;
 
-use crate::no_std_io::{
+use crate::{
   core_streams::Cursor,
   extended_streams::tar::{
     confident_value::ConfidentValue,

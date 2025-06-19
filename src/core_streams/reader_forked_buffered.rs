@@ -1,4 +1,4 @@
-use crate::no_std_io::{BufferedRead, Read, ReadExactError};
+use crate::{BufferedRead, Read, ReadExactError};
 
 /// See [`BufferedRead`] for more details.
 pub struct ForkedBufferedReader<'a, R: BufferedRead + ?Sized> {

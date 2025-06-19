@@ -1,4 +1,4 @@
-use crate::no_std_io::Read;
+use crate::Read;
 
 /// A reader that reads data byte by byte, useful for testing.
 pub struct BytewiseReader<'a, R: Read + ?Sized> {
@@ -39,7 +39,7 @@ impl<'a, R: Read + ?Sized> Read for BytewiseReader<'a, R> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::Cursor;
+  use crate::Cursor;
 
   #[test]
   fn test_bytewise_reader_reads_correctly() {

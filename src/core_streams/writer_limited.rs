@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::no_std_io::Write;
+use crate::Write;
 
 /// A writer that only writes up to a specified limit.
 /// This is useful when handling user input to prevent resource exhaustion attacks.
@@ -67,7 +67,7 @@ impl<'a, W: Write + ?Sized> Write for LimitedWriter<'a, W> {
 mod tests {
   use super::*;
 
-  use crate::no_std_io::{Cursor, WriteAll as _, WriteAllError};
+  use crate::{Cursor, WriteAll as _, WriteAllError};
 
   #[test]
   fn test_limited_writer() {
