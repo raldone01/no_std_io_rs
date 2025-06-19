@@ -1,5 +1,9 @@
 #![no_std]
 extern crate alloc;
 
-pub mod no_std_io;
-//pub mod tar_gz;
+mod core_streams;
+pub mod extended_streams;
+mod traits;
+
+pub use core_streams::*;
+pub use traits::*;
