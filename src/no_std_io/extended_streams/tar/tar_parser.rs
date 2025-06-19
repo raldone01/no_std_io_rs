@@ -1,7 +1,7 @@
 use core::convert::Infallible;
 
 use alloc::{
-  string::{String, ToString},
+  string::{String, ToString as _},
   vec::Vec,
 };
 
@@ -63,7 +63,7 @@ impl From<PaxConfidence> for TarConfidence {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SparseFileInstruction {
   pub(crate) offset_before: u64,
   pub(crate) data_size: u64,
@@ -281,7 +281,7 @@ impl TarParser {
   }
 
   fn recover_internal(&mut self) -> InodeBuilder {
-    self.pax_parser.recover();
+    self.pax_parser.recover(PaxConfidence::LOCAL);
     self
       .pax_parser
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
@@ -748,7 +748,7 @@ impl TarParser {
       .peek_exact(bytes_to_read)
       .expect("BUG: Incremental PAX data reading failed");
 
-    let bytes_read = self.pax_parser.parse_bytes(pax_bytes, pax_mode)?;
+    let bytes_read = self.pax_parser.write(pax_bytes, false)?;
 
     let remaining_data = remaining_data - bytes_read;
     Ok(if remaining_data == 0 {

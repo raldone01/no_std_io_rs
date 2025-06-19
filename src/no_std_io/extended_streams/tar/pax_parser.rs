@@ -15,10 +15,10 @@ use crate::no_std_io::{
     },
     InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat, TarParserError,
   },
-  Cursor,
+  Cursor, Write,
 };
 
-#[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum PaxConfidence {
   GLOBAL = 1,
   #[default]
@@ -271,38 +271,27 @@ impl PaxParser {
   /// in the format `offset,size[,offset,size,...]` (0.1)
   fn parse_gnu_sparse_map_0_1(&mut self, value: String) {
     let parts = value.split(',');
-    let mut sparse_instruction_builder = SparseFileInstructionBuilder::default();
+    let mut offset = None;
     for (i, part) in parts.enumerate() {
       if i % 2 == 0 {
         // This is an offset
-        if let Ok(parsed_value) = part.parse::<u64>() {
-          sparse_instruction_builder.offset_before = Some(parsed_value);
+        if let Ok(parsed_offset) = part.parse::<u64>() {
+          offset = Some(parsed_offset);
         } else {
           // TODO: log warning about invalid offset
-          sparse_instruction_builder.offset_before = None;
         }
       } else {
         // This is a size
-        if let Ok(parsed_value) = part.parse::<u64>() {
-          sparse_instruction_builder.data_size = Some(parsed_value);
+        if let (Some(offset), Ok(parsed_data_size)) = (offset, part.parse::<u64>()) {
+          self.gnu_sparse_map_local.push(SparseFileInstruction {
+            offset_before: offset,
+            data_size: parsed_data_size,
+          });
         } else {
           // TODO: log warning about invalid size
-          sparse_instruction_builder.data_size = None;
         }
+        offset = None; // Reset offset for the next pair
       }
-      match (
-        sparse_instruction_builder.offset_before,
-        sparse_instruction_builder.data_size,
-      ) {
-        (Some(_), Some(_)) => {
-          self.gnu_sparse_map_local.push(SparseFileInstruction {
-            offset_before: sparse_instruction_builder.offset_before.unwrap(),
-            data_size: sparse_instruction_builder.data_size.unwrap(),
-          });
-        },
-        _ => {},
-      }
-      self.sparse_instruction_builder = Default::default();
     }
   }
 
@@ -489,6 +478,7 @@ impl PaxParser {
     };
 
     // +1 for the space
+    cursor.set_position(cursor.position() + 1);
     let length = length.saturating_sub(length_index + 1);
     if length == 0 {
       // If the length is 0, we are done with this key-value pair
@@ -584,9 +574,14 @@ impl PaxParser {
     // Ready for the next key-value pair
     Ok(PaxParserState::ExpectingNextKV)
   }
+}
 
-  pub fn parse_bytes(&mut self, bytes: &[u8]) -> Result<usize, TarParserError> {
-    let mut cursor = Cursor::new(bytes);
+impl Write for PaxParser {
+  type WriteError = TarParserError;
+  type FlushError = core::convert::Infallible;
+
+  fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
+    let mut cursor = Cursor::new(input_buffer);
 
     let parser_state = core::mem::replace(&mut self.state, PaxParserState::NoNextStateSet);
 
@@ -604,5 +599,131 @@ impl PaxParser {
     };
 
     Ok(cursor.position())
+  }
+
+  fn flush(&mut self) -> Result<(), Self::FlushError> {
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use alloc::{string::ToString as _, vec};
+
+  use crate::no_std_io::{WriteAll as _, WriteAllError};
+
+  #[test]
+  fn test_new_with_initial_global_attributes() {
+    let mut globals = HashMap::new();
+    globals.insert("gname".to_string(), "wheel".to_string());
+    globals.insert("uid".to_string(), "0".to_string());
+
+    let parser = PaxParser::new(globals);
+
+    assert_eq!(
+      parser.gname.get_with_confidence(),
+      Some((PaxConfidence::GLOBAL, &"wheel".to_string()))
+    );
+    assert_eq!(
+      parser.uid.get_with_confidence(),
+      Some((PaxConfidence::GLOBAL, &0))
+    );
+    assert_eq!(parser.unparsed_global_attributes.len(), 0); // Parsed globals are not in the unparsed map.
+  }
+
+  #[test]
+  fn test_simple_kv_parsing() {
+    let mut parser = PaxParser::default();
+    let data = b"18 path=some/file\n";
+    parser.write_all(data, false).unwrap();
+
+    assert_eq!(parser.path.get(), Some(&RelativePathBuf::from("some/file")));
+    assert!(matches!(parser.state, PaxParserState::ExpectingNextKV));
+  }
+
+  #[test]
+  fn test_multiple_kv_parsing() {
+    let mut parser = PaxParser::default();
+    let data = b"18 path=some/file\n12 size=123\n12 uid=1000\n";
+    parser.write_all(data, false).unwrap();
+
+    assert_eq!(parser.path.get(), Some(&RelativePathBuf::from("some/file")));
+    assert!(matches!(parser.state, PaxParserState::ExpectingNextKV));
+  }
+
+  #[test]
+  fn test_gnu_sparse_map_0_1() {
+    let mut parser = PaxParser::default();
+    let data = b"45 GNU.sparse.map=1024,512,8192,2048,16384,0\n";
+    parser.write_all(data, false).unwrap();
+
+    let expected = vec![
+      SparseFileInstruction {
+        offset_before: 1024,
+        data_size: 512,
+      },
+      SparseFileInstruction {
+        offset_before: 8192,
+        data_size: 2048,
+      },
+      SparseFileInstruction {
+        offset_before: 16384,
+        data_size: 0,
+      },
+    ];
+    assert_eq!(parser.gnu_sparse_map_local, expected);
+  }
+
+  #[test]
+  fn test_unparsed_attributes_and_drain() {
+    let mut parser = PaxParser::default();
+    let data = b"21 SCHILY.fflags=bar\n12 uid=1000\n";
+    parser.write_all(data, false).unwrap();
+
+    assert_eq!(parser.unparsed_attributes.len(), 1);
+    assert_eq!(
+      parser.unparsed_attributes.get("SCHILY.fflags"),
+      Some(&"bar".to_string())
+    );
+
+    let drained = parser.drain_local_unparsed_attributes();
+
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained.get("SCHILY.fflags"), Some(&"bar".to_string()));
+    assert!(parser.unparsed_attributes.is_empty());
+  }
+
+  #[test]
+  fn test_parser_error_bad_length() {
+    let mut parser = PaxParser::default();
+    let data = b"abc path=foo\n";
+    assert_eq!(
+      parser.write_all(data, false),
+      Err(WriteAllError::Io(TarParserError::CorruptPaxLength))
+    );
+  }
+
+  /*#[test] This should just end up in the audit log
+  fn test_parser_error_bad_key() {
+    let mut parser = PaxParser::default();
+    // The length 10 covers " pathfoo\n". There is no '='.
+    let data = b"11 pathfoo\n";
+    assert_eq!(
+      parser.write_all(data, false),
+      Err(WriteAllError::Io(TarParserError::CorruptPaxKey))
+    );
+  }*/
+
+  #[test]
+  fn test_parser_error_bad_value() {
+    let mut parser = PaxParser::default();
+    // The length 11 covers " path=foo ". It must end with '\n'.
+    let data = b"11 path=foo ";
+    assert_eq!(
+      parser.write_all(data, false),
+      Err(WriteAllError::Io(TarParserError::CorruptPaxValue))
+    );
   }
 }
