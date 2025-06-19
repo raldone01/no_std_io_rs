@@ -190,15 +190,23 @@ struct StateReadingFileData {
   padding_after: usize,
 }
 
+struct StateParsingPaxData {
+  /// The amount of data that is still remaining to be read.
+  remaining_data: usize,
+  /// The amount of padding after the PAX data.
+  padding_after: usize,
+  pax_mode: PaxConfidence,
+}
+
 #[derive(Default)]
 enum TarParserState {
   #[default]
   ExpectingTarHeader,
-  ParsingPaxData,
   ExpectingOldGnuSparseExtendedHeader(StateExpectingOldGnuSparseExtendedHeader),
   SkippingData(StateSkippingData),
   ParsingGnuLongName(StateParsingGnuLongName),
   ReadingFileData(StateReadingFileData),
+  ParsingPaxData(StateParsingPaxData),
   NoNextStateSet,
 }
 pub struct TarParser {
@@ -513,14 +521,6 @@ impl TarParser {
     let data_after_header_block_aligned = (data_after_header + 511) & !511; // align to next 512 byte block
     let padding_after_data = data_after_header_block_aligned - data_after_header; // padding after header block
 
-    /*let mut parse_pax_data = |global: bool| -> Result<(), TarExtractionError<R::ReadExactError>> {
-      // We read the next block and parse the PAX data.
-      let pax_data_bytes = &reader
-        .read_exact(data_after_header_block_aligned)
-        .map_err(TarExtractionError::Io)?[..data_after_header];
-      todo!()
-    };*/
-
     // now we match on the typeflag
     Ok(match typeflag {
       TarTypeFlag::CharacterDevice => self.finish_inode(|selv| {
@@ -536,14 +536,22 @@ impl TarParser {
         })
       }),
       TarTypeFlag::Fifo => self.finish_inode(|_| FileEntry::Fifo),
-      /*TarTypeFlag::PaxExtendedHeader => {
-        // We read the next block and parse the PAX data.
-        parse_pax_data(false)?;
+      TarTypeFlag::PaxExtendedHeader => {
+        self.pax_parser.recover();
+        TarParserState::ParsingPaxData(StateParsingPaxData {
+          remaining_data: data_after_header,
+          padding_after: padding_after_data,
+          pax_mode: PaxConfidence::LOCAL, // We are parsing a local PAX header.
+        })
       },
       TarTypeFlag::PaxGlobalExtendedHeader => {
-        // We read the next block and parse the PAX data.
-        parse_pax_data(true)?;
-      },*/
+        self.pax_parser.recover();
+        TarParserState::ParsingPaxData(StateParsingPaxData {
+          remaining_data: data_after_header,
+          padding_after: padding_after_data,
+          pax_mode: PaxConfidence::GLOBAL, // We are parsing a local PAX header.
+        })
+      },
       TarTypeFlag::LongNameGnu => {
         TarParserState::ParsingGnuLongName(StateParsingGnuLongName {
           remaining_data: data_after_header,
@@ -716,6 +724,47 @@ impl TarParser {
       })
     })
   }
+
+  fn state_parsing_pax_data(
+    &mut self,
+    reader: &mut Cursor<&[u8]>,
+    state_parsing_pax_data: StateParsingPaxData,
+  ) -> Result<TarParserState, TarParserError> {
+    let StateParsingPaxData {
+      remaining_data,
+      padding_after,
+      pax_mode,
+    } = state_parsing_pax_data;
+
+    // incrementally read the PAX data
+    let bytes_to_read = remaining_data.min(reader.remaining());
+    let pax_bytes = reader
+      .peek_exact(bytes_to_read)
+      .expect("BUG: Incremental PAX data reading failed");
+
+    let bytes_read = self.pax_parser.parse_bytes(pax_bytes, pax_mode);
+
+    let remaining_data = remaining_data - bytes_read;
+    Ok(if remaining_data == 0 {
+      // We are done reading the PAX data, so we reset the parser state.
+      if padding_after > 0 {
+        // We have some padding after the PAX data, so we skip it.
+        TarParserState::SkippingData(StateSkippingData {
+          remaining_data: padding_after,
+          context: "Padding after PAX data",
+        })
+      } else {
+        TarParserState::ExpectingTarHeader
+      }
+    } else {
+      // We still have some data to read, so we keep the parser state.
+      TarParserState::ParsingPaxData(StateParsingPaxData {
+        remaining_data,
+        padding_after,
+        pax_mode,
+      })
+    })
+  }
 }
 
 impl Write for TarParser {
@@ -738,6 +787,9 @@ impl Write for TarParser {
       },
       TarParserState::ExpectingOldGnuSparseExtendedHeader(state) => {
         self.state_expecting_old_gnu_sparse_extended_header(&mut reader, state)
+      },
+      TarParserState::ParsingPaxData(state_parsing_pax_data) => {
+        self.state_parsing_pax_data(&mut reader, state_parsing_pax_data)
       },
       TarParserState::NoNextStateSet => {
         panic!("BUG: No next state set in TarParser");

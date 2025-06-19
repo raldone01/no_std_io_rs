@@ -2,17 +2,20 @@ use alloc::{string::String, vec::Vec};
 use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
 
-use crate::no_std_io::extended_streams::tar::{
-  confident_value::ConfidentValue,
-  tar_constants::pax_keys_well_known::{
-    gnu::{
-      GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_MAJOR,
-      GNU_SPARSE_MAP_0_1, GNU_SPARSE_MAP_NUM_BLOCKS_0_01, GNU_SPARSE_MINOR, GNU_SPARSE_NAME_01_01,
-      GNU_SPARSE_REALSIZE_0_01, GNU_SPARSE_REALSIZE_1_0,
+use crate::no_std_io::{
+  extended_streams::tar::{
+    confident_value::ConfidentValue,
+    tar_constants::pax_keys_well_known::{
+      gnu::{
+        GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_MAJOR,
+        GNU_SPARSE_MAP_0_1, GNU_SPARSE_MAP_NUM_BLOCKS_0_01, GNU_SPARSE_MINOR,
+        GNU_SPARSE_NAME_01_01, GNU_SPARSE_REALSIZE_0_01, GNU_SPARSE_REALSIZE_1_0,
+      },
+      ATIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
     },
-    ATIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
+    InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat,
   },
-  InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat,
+  Cursor,
 };
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -90,6 +93,7 @@ enum PaxParserState {
   ExpectingNextKV,
   ParsingKey(StateParsingKey),
   ParsingValue(StateParsingValue),
+  NoNextStateSet,
 }
 
 #[derive(Default)]
@@ -447,5 +451,34 @@ impl PaxParser {
         }
       },
     }
+  }
+
+  fn state_expecting_next_kv(&mut self, cursor: &mut Cursor<&[u8]>) -> PaxParserState {
+    todo!()
+  }
+
+  fn state_parsing_key(&mut self, cursor: &mut Cursor<&[u8]>) -> PaxParserState {
+    todo!()
+  }
+
+  fn state_parsing_value(&mut self, cursor: &mut Cursor<&[u8]>) -> PaxParserState {
+    todo!()
+  }
+
+  pub fn parse_bytes(&mut self, bytes: &[u8], pax_mode: PaxConfidence) -> usize {
+    let mut cursor = Cursor::new(bytes);
+
+    let parser_state = core::mem::replace(&mut self.state, PaxParserState::NoNextStateSet);
+
+    self.state = match parser_state {
+      PaxParserState::ExpectingNextKV => self.state_expecting_next_kv(&mut cursor),
+      PaxParserState::ParsingKey(state_parsing_key) => self.state_parsing_key(&mut cursor),
+      PaxParserState::ParsingValue(state_parsing_value) => self.state_parsing_value(&mut cursor),
+      PaxParserState::NoNextStateSet => {
+        panic!("BUG: No next state set in PaxParser");
+      },
+    };
+
+    cursor.position()
   }
 }
