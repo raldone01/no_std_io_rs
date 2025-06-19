@@ -147,7 +147,8 @@ impl<B: AsRef<[u8]>> Read for Cursor<B> {
   type ReadError = Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    let n = Read::read(&mut Cursor::split(self).1, output_buffer)?;
+    let reader = &mut Cursor::split(self).1;
+    let n = reader.read(output_buffer)?;
     self.position += n;
     Ok(n)
   }

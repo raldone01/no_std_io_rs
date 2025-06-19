@@ -15,8 +15,3 @@ pub use read_all::*;
 pub use seek::*;
 pub use write::*;
 pub use write_all::*;
-
-pub(crate) fn advance<T: AsRef<[u8]> + ?Sized>(slice: &mut T, n: usize) {
-  let slice_ref = &mut slice.as_ref();
-  *slice_ref = &core::mem::take(slice_ref)[n..];
-}

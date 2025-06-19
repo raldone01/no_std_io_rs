@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 
 use thiserror::Error;
 
-use crate::{advance, ForkedBufferedReader, Read};
+use crate::{ForkedBufferedReader, Read};
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ReadExactError<U> {
@@ -136,21 +136,16 @@ impl BufferedRead for &[u8] {
     &mut self,
     byte_count: usize,
   ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>> {
-    if byte_count > self.len() {
-      return Err(ReadExactError::UnexpectedEof {
-        bytes_requested: byte_count,
-        min_readable_bytes: self.len(),
-      });
-    }
-    advance(self, byte_count);
+    self.read_exact(byte_count)?;
     Ok(())
   }
 
   fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    let len = self.len();
-    let bytes = &self[..];
-    advance(self, len);
-    Ok(bytes)
+    let byte_count = self.len();
+    self.read_exact(byte_count).map_err(|e| match e {
+      ReadExactError::UnexpectedEof { .. } => panic!("BUG: Unexpected EOF in slice read_buffered"),
+      ReadExactError::Io(err) => err,
+    })
   }
 
   fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
@@ -168,72 +163,7 @@ impl BufferedRead for &[u8] {
       });
     }
     let bytes = &self[..byte_count];
-    advance(self, byte_count);
-    Ok(bytes)
-  }
-
-  fn peek_exact(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>> {
-    if byte_count > self.len() {
-      return Err(ReadExactError::UnexpectedEof {
-        bytes_requested: byte_count,
-        min_readable_bytes: self.len(),
-      });
-    }
-    Ok(&self[..byte_count])
-  }
-}
-
-impl<const N: usize> BufferedRead for &[u8; N] {
-  type UnderlyingReadExactError = Infallible;
-  type ForkedBufferedReaderImplementation<'a>
-    = ForkedBufferedReader<'a, Self>
-  where
-    Self: 'a;
-
-  fn fork_reader(&mut self) -> Self::ForkedBufferedReaderImplementation<'_> {
-    ForkedBufferedReader::new(self, 0)
-  }
-
-  fn skip(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>> {
-    if byte_count > self.len() {
-      return Err(ReadExactError::UnexpectedEof {
-        bytes_requested: byte_count,
-        min_readable_bytes: self.len(),
-      });
-    }
-    advance(self, byte_count);
-    Ok(())
-  }
-
-  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    let len = self.len();
-    let bytes = &self[..];
-    advance(self, len);
-    Ok(bytes)
-  }
-
-  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    Ok(*self)
-  }
-
-  fn read_exact(
-    &mut self,
-    byte_count: usize,
-  ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>> {
-    if byte_count > self.len() {
-      return Err(ReadExactError::UnexpectedEof {
-        bytes_requested: byte_count,
-        min_readable_bytes: self.len(),
-      });
-    }
-    let bytes = &self[..byte_count];
-    advance(self, byte_count);
+    *self = &self[byte_count..];
     Ok(bytes)
   }
 
@@ -274,5 +204,20 @@ pub trait BufferedReadExt: BufferedRead {
     BufferedReadByteIterator {
       buffered_read: self,
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_buffered_read_slice() {
+    let reader_data = [1, 2, 3, 4, 5];
+    let mut reader = &reader_data[..];
+    let bytes_read = reader.read_exact(1).unwrap();
+    assert_eq!(bytes_read, [1]);
+    let bytes_read = reader.read_exact(2).unwrap();
+    assert_eq!(bytes_read, [2, 3]);
   }
 }

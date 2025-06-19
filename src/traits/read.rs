@@ -5,7 +5,7 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{advance, LimitedReader};
+use crate::LimitedReader;
 
 /// Trait for reading bytes.
 pub trait Read {
@@ -26,18 +26,6 @@ impl<R: Read + ?Sized> Read for &mut R {
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     (**self).read(output_buffer)
   }
-}
-
-fn read_slice<T: AsRef<[u8]> + ?Sized>(
-  slice: &mut T,
-  output_buffer: &mut [u8],
-) -> Result<usize, Infallible> {
-  let slice = &mut slice.as_ref();
-
-  let n = core::cmp::min(output_buffer.len(), slice.len());
-  output_buffer[..n].copy_from_slice(&slice.as_ref()[..n]);
-  advance(slice, n);
-  Ok(n)
 }
 
 // --- Read implementations for common smart pointer types ---
@@ -66,35 +54,29 @@ impl_read_for_wrapper!(
 
 // --- Read implementations for slice types ---
 
-impl Read for [u8] {
-  type ReadError = Infallible;
-
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    read_slice(self, output_buffer)
-  }
-}
-
+/// Read is implemented for `&[u8]` by copying from the slice.
+///
+/// Note that reading updates the slice to point to the yet unread part.
+/// The slice will be empty when EOF is reached.
 impl Read for &[u8] {
   type ReadError = Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    read_slice(self, output_buffer)
-  }
-}
+    let amt = core::cmp::min(output_buffer.len(), self.len());
+    let (a, b) = self.split_at(amt);
 
-impl<const N: usize> Read for [u8; N] {
-  type ReadError = Infallible;
+    // First check if the amount of bytes we want to read is small:
+    // `copy_from_slice` will generally expand to a call to `memcpy`, and
+    // for a single byte the overhead is significant.
 
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    read_slice(self, output_buffer)
-  }
-}
+    if amt == 1 {
+      output_buffer[0] = a[0];
+    } else {
+      output_buffer[..amt].copy_from_slice(a);
+    }
 
-impl<const N: usize> Read for &[u8; N] {
-  type ReadError = Infallible;
-
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    read_slice(self, output_buffer)
+    *self = b;
+    Ok(amt)
   }
 }
 
@@ -111,5 +93,23 @@ pub trait ReadLimited: Read {
 impl<R: Read + ?Sized> ReadLimited for R {
   fn take(&mut self, read_limit_bytes: usize) -> LimitedReader<'_, Self> {
     LimitedReader::new(self, read_limit_bytes)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_read_slice() {
+    let reader_data = [1, 2, 3, 4, 5];
+    let mut reader = &reader_data[..];
+    let mut output_buffer = [0; 3];
+    let bytes_read = reader.read(&mut output_buffer).unwrap();
+    assert_eq!(bytes_read, 3);
+    assert_eq!(output_buffer, [1, 2, 3]);
+    let bytes_read = reader.read(&mut output_buffer).unwrap();
+    assert_eq!(bytes_read, 2);
+    assert_eq!(output_buffer, [4, 5, 3]); // Remaining data
   }
 }

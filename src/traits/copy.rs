@@ -97,12 +97,7 @@ pub trait Copy: Read {
     }
     Ok(total_bytes)
   }
-}
 
-/// Blanket implementation for all `Read` implementers.
-impl<R: Read + ?Sized> Copy for R {}
-
-pub trait CopyBuffered: BufferedRead {
   /// Streams all bytes from the reader to the writer using a transfer buffer.
   ///
   /// This function continues until the reader returns 0 (EOF) or an error occurs.
@@ -112,7 +107,10 @@ pub trait CopyBuffered: BufferedRead {
     &mut self,
     writer: &mut W,
     sync_hint: bool,
-  ) -> Result<usize, CopyError<Self::UnderlyingReadExactError, W::WriteError>> {
+  ) -> Result<usize, CopyError<Self::UnderlyingReadExactError, W::WriteError>>
+  where
+    Self: BufferedRead,
+  {
     let mut total_bytes = 0;
 
     loop {
@@ -138,7 +136,10 @@ pub trait CopyBuffered: BufferedRead {
     writer: &mut W,
     sync_hint: bool,
     write_delimiter: bool,
-  ) -> Result<usize, CopyUntilError<Self::UnderlyingReadExactError, W::WriteError>> {
+  ) -> Result<usize, CopyUntilError<Self::UnderlyingReadExactError, W::WriteError>>
+  where
+    Self: BufferedRead,
+  {
     let mut total_bytes = 0;
 
     loop {
@@ -168,12 +169,14 @@ pub trait CopyBuffered: BufferedRead {
         .write_all(bytes_read, sync_hint)
         .map_err(CopyUntilError::IoWrite)?;
       total_bytes += bytes_read_count;
-      self.skip(bytes_read_count).map_err(|e| match e {
-        ReadExactError::UnexpectedEof { .. } => {
-          panic!("BUG: We are only skipping bytes that are in the buffer.")
-        },
-        ReadExactError::Io(e) => CopyUntilError::IoRead(e),
-      })?;
+      self
+        .skip(bytes_read_count + (!write_delimiter && delimiter_found) as usize)
+        .map_err(|e| match e {
+          ReadExactError::UnexpectedEof { .. } => {
+            panic!("BUG: We are only skipping bytes that are in the buffer.")
+          },
+          ReadExactError::Io(e) => CopyUntilError::IoRead(e),
+        })?;
 
       if delimiter_found {
         break; // Delimiter found
@@ -184,5 +187,81 @@ pub trait CopyBuffered: BufferedRead {
   }
 }
 
-/// Blanked implementation for all `BufferedRead` implementers.
-impl<R: BufferedRead + ?Sized> CopyBuffered for R {}
+/// Blanket implementation for all `Read` implementers.
+impl<R: Read + ?Sized> Copy for R {}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use alloc::vec::Vec;
+
+  #[test]
+  fn test_copy_simple() {
+    let mut input = b"Hello, world!".as_ref();
+    let mut output = Vec::new();
+    let mut buffer = [0; 8];
+
+    input.copy(&mut output, &mut buffer, false).unwrap();
+
+    assert_eq!(output, b"Hello, world!");
+  }
+
+  #[test]
+  fn test_copy_until_delimiter() {
+    let input = b"Hello, world!";
+
+    let mut input_reader = input.as_ref();
+    let mut output = Vec::new();
+    let delimiter = b',';
+    let bytes_copied = input_reader
+      .copy_until(delimiter, &mut output, false, true)
+      .unwrap();
+    assert_eq!(bytes_copied, 6);
+    assert_eq!(output, b"Hello,");
+    assert_eq!(input_reader, b" world!");
+
+    let mut input_reader = input.as_ref();
+    let mut output = Vec::new();
+    let bytes_copied = input_reader
+      .copy_until(delimiter, &mut output, false, false)
+      .unwrap();
+    assert_eq!(bytes_copied, 5);
+    assert_eq!(output, b"Hello");
+    assert_eq!(input_reader, b" world!");
+  }
+
+  #[test]
+  fn test_copy_buffered_simple() {
+    let mut input = b"Hello, world!".as_ref();
+    let mut output = Vec::new();
+
+    input.copy_buffered(&mut output, false).unwrap();
+
+    assert_eq!(output, b"Hello, world!");
+  }
+
+  #[test]
+  fn test_copy_buffered_until_delimiter() {
+    let input = b"Hello, world!";
+
+    let mut input_reader = input.as_ref();
+    let mut output = Vec::new();
+    let delimiter = b',';
+    let bytes_copied = input_reader
+      .copy_buffered_until(delimiter, &mut output, false, true)
+      .unwrap();
+    assert_eq!(bytes_copied, 6);
+    assert_eq!(output, b"Hello,");
+    assert_eq!(input_reader, b" world!");
+
+    let mut input_reader = input.as_ref();
+    let mut output = Vec::new();
+    let bytes_copied = input_reader
+      .copy_buffered_until(delimiter, &mut output, false, false)
+      .unwrap();
+    assert_eq!(bytes_copied, 5);
+    assert_eq!(output, b"Hello");
+    assert_eq!(input_reader, b" world!");
+  }
+}

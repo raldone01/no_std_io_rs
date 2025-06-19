@@ -1,9 +1,10 @@
 use core::cell::{Cell, RefCell, UnsafeCell};
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
+
 use thiserror::Error;
 
-use crate::{advance, LimitedWriter};
+use crate::LimitedWriter;
 
 /// Trait for writing bytes.
 pub trait Write {
@@ -93,32 +94,27 @@ pub enum SliceWriteError {
   SliceFull { requested_size: usize },
 }
 
-fn write_slice<T: AsMut<[u8]> + ?Sized>(
-  slice: &mut T,
-  input_buffer: &[u8],
-) -> Result<usize, SliceWriteError> {
-  if input_buffer.is_empty() {
-    return Ok(0);
-  }
-  let slice = &mut slice.as_mut();
-
-  let bytes_to_write = core::cmp::min(input_buffer.len(), slice.len());
-  if bytes_to_write == 0 {
-    return Err(SliceWriteError::SliceFull {
-      requested_size: input_buffer.len(),
-    });
-  }
-  slice[..bytes_to_write].copy_from_slice(&input_buffer[..bytes_to_write]);
-  advance(slice, bytes_to_write);
-  Ok(bytes_to_write)
-}
-
-impl Write for [u8] {
+/// Write is implemented for `&mut [u8]` by copying into the slice, overwriting
+/// its data.
+///
+/// Note that writing updates the slice to point to the yet unwritten part.
+/// The slice will be empty when it has been completely overwritten.
+///
+/// If the number of bytes to be written exceeds the size of the slice, write operations will
+/// return short writes: ultimately, `Ok(0)`; in this situation, `write_all` returns an error of
+/// kind `WriteZero`.
+impl Write for &mut [u8] {
   type WriteError = SliceWriteError;
   type FlushError = core::convert::Infallible;
 
   fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
-    write_slice(self, input_buffer)
+    let amt = core::cmp::min(input_buffer.len(), self.len());
+    let (a, b) = core::mem::take(self).split_at_mut(amt);
+
+    a.copy_from_slice(&input_buffer[..amt]);
+
+    *self = b;
+    Ok(amt)
   }
 
   fn flush(&mut self) -> Result<(), Self::FlushError> {
@@ -126,18 +122,27 @@ impl Write for [u8] {
   }
 }
 
-impl<const N: usize> Write for [u8; N] {
-  type WriteError = SliceWriteError;
+impl Write for Vec<u8> {
+  type WriteError = TryReserveError;
   type FlushError = core::convert::Infallible;
 
   fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
-    write_slice(self, input_buffer)
+    if input_buffer.is_empty() {
+      return Ok(0);
+    }
+    let bytes_to_write = input_buffer.len();
+    self.try_reserve(bytes_to_write)?;
+    let len = self.len();
+    self.extend_from_slice(input_buffer);
+    Ok(self.len() - len)
   }
 
   fn flush(&mut self) -> Result<(), Self::FlushError> {
     Ok(())
   }
 }
+
+// --- WriteLimited trait ---
 
 pub trait WriteLimited: Write {
   /// Creates a new writer that limits the number of bytes written to `write_limit_bytes`.
@@ -150,5 +155,21 @@ pub trait WriteLimited: Write {
 impl<W: Write + ?Sized> WriteLimited for W {
   fn put(&mut self, write_limit_bytes: usize) -> LimitedWriter<'_, Self> {
     LimitedWriter::new(self, write_limit_bytes)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_write_vec() {
+    let mut buffer = Vec::new();
+    let input = [1, 2, 3, 4, 5];
+    let result = buffer.write(&input, false);
+    assert_eq!(result, Ok(5));
+    assert_eq!(buffer, input);
+    let result = buffer.write(&[], false);
+    assert_eq!(result, Ok(0));
   }
 }
