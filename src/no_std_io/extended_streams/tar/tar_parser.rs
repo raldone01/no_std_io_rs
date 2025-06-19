@@ -37,6 +37,8 @@ pub enum TarParserError {
   CorruptHeaderChecksum(#[from] TarHeaderChecksumError),
   #[error("Corrupt header: Unknown magic or version: {magic:?} {version:?}")]
   CorruptHeaderMagicVersion { magic: [u8; 6], version: [u8; 2] },
+  #[error("Corrupt pax length")]
+  CorruptPaxLength,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -742,7 +744,7 @@ impl TarParser {
       .peek_exact(bytes_to_read)
       .expect("BUG: Incremental PAX data reading failed");
 
-    let bytes_read = self.pax_parser.parse_bytes(pax_bytes, pax_mode);
+    let bytes_read = self.pax_parser.parse_bytes(pax_bytes, pax_mode)?;
 
     let remaining_data = remaining_data - bytes_read;
     Ok(if remaining_data == 0 {
@@ -777,19 +779,19 @@ impl Write for TarParser {
 
     let parser_state = core::mem::replace(&mut self.parser_state, TarParserState::NoNextStateSet);
 
-    let parse_write_result = match parser_state {
-      TarParserState::ExpectingTarHeader => self.state_expecting_tar_header(&mut reader),
+    let next_state = match parser_state {
+      TarParserState::ExpectingTarHeader => self.state_expecting_tar_header(&mut reader)?,
       TarParserState::SkippingData(state_skipping_data) => {
-        self.state_skipping_data(&mut reader, state_skipping_data)
+        self.state_skipping_data(&mut reader, state_skipping_data)?
       },
       TarParserState::ParsingGnuLongName(state_parsing_gnu_long_name) => {
-        self.state_parsing_gnu_long_name(&mut reader, state_parsing_gnu_long_name)
+        self.state_parsing_gnu_long_name(&mut reader, state_parsing_gnu_long_name)?
       },
       TarParserState::ExpectingOldGnuSparseExtendedHeader(state) => {
-        self.state_expecting_old_gnu_sparse_extended_header(&mut reader, state)
+        self.state_expecting_old_gnu_sparse_extended_header(&mut reader, state)?
       },
       TarParserState::ParsingPaxData(state_parsing_pax_data) => {
-        self.state_parsing_pax_data(&mut reader, state_parsing_pax_data)
+        self.state_parsing_pax_data(&mut reader, state_parsing_pax_data)?
       },
       TarParserState::NoNextStateSet => {
         panic!("BUG: No next state set in TarParser");
@@ -798,10 +800,8 @@ impl Write for TarParser {
         todo!()
       },
     };
-    parse_write_result.map(|next_parser_state| {
-      self.parser_state = next_parser_state;
-      reader.position()
-    })
+    self.parser_state = next_state;
+    Ok(reader.position())
   }
 
   fn flush(&mut self) -> Result<(), Self::FlushError> {
