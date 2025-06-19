@@ -5,8 +5,9 @@ use crate::{BackingBuffer, BufferedRead, ForkedBufferedReader, Read, ReadExactEr
 /// A buffered reader can be used to add buffering to any reader.
 ///
 /// To be generic over any buffered reader implementation, consider being generic over the [`BufferedRead`](crate::BufferedRead) trait instead.
-pub struct BufferedReader<R: Read, B: BackingBuffer> {
-  source_reader: R,
+#[derive(Debug, PartialEq, Eq)]
+pub struct BufferedReader<'a, R: Read + ?Sized, B: BackingBuffer> {
+  source_reader: &'a mut R,
   buffer: B,
   last_user_read: usize,
   bytes_in_buffer: usize,
@@ -21,10 +22,10 @@ pub enum BufferedReaderReadError<U, RU> {
   Io(#[from] U),
 }
 
-impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
+impl<'a, R: Read + ?Sized, B: BackingBuffer> BufferedReader<'a, R, B> {
   /// Creates a new buffered reader with the given source and buffer.
   #[must_use]
-  pub fn new(source: R, internal_buffer: B, read_chunk_size: usize) -> Self {
+  pub fn new(source: &'a mut R, internal_buffer: B, read_chunk_size: usize) -> Self {
     Self {
       source_reader: source,
       buffer: internal_buffer,
@@ -118,7 +119,7 @@ impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
   }
 }
 
-impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
+impl<R: Read + ?Sized, B: BackingBuffer> Read for BufferedReader<'_, R, B> {
   type ReadError = BufferedReaderReadError<R::ReadError, B::ResizeError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -167,13 +168,14 @@ impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
   }
 }
 
-impl<R: Read, B: BackingBuffer> BufferedRead for BufferedReader<R, B> {
+impl<'a, R: Read + ?Sized, B: BackingBuffer> BufferedRead for BufferedReader<'a, R, B> {
   type UnderlyingReadExactError = Self::ReadError;
-  type ForkedBufferedReaderImplementation<'a>
-    = ForkedBufferedReader<'a, Self>
+  type ForkedBufferedReaderImplementation<'b>
+    = ForkedBufferedReader<'b, Self>
   where
-    R: 'a,
-    B: 'a;
+    Self: 'b,
+    R: 'b,
+    B: 'b;
 
   fn fork_reader(&mut self) -> Self::ForkedBufferedReaderImplementation<'_> {
     ForkedBufferedReader::new(self, 0)

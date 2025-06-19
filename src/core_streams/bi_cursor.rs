@@ -7,6 +7,7 @@ use crate::{
   SeekFrom, Write,
 };
 
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct Cursor<B> {
   backing_buffer: B,
   position: usize,

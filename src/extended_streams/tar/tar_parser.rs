@@ -18,28 +18,24 @@ use crate::{
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
       GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
-      UstarHeaderAdditions, V7Header,
+      UstarHeaderAdditions, V7Header, BLOCK_SIZE,
     },
     BlockDeviceEntry, CharacterDeviceEntry, FileEntry, FilePermissions, HardLinkEntry,
     SymbolicLinkEntry, TarInode,
   },
-  BufferedRead as _, ReadExactError, Write,
+  BufferedRead as _, Write, WriteAll as _,
 };
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum TarParserError {
-  #[error("The input buffer is only {actual_size} bytes, but at least {required_size} bytes are required for parsing. Reason: {reason}")]
-  InputBufferTooSmall {
-    actual_size: usize,
-    required_size: usize,
-    reason: &'static str,
-  },
   #[error("Corrupt header: Checksum error: {0}")]
   CorruptHeaderChecksum(#[from] TarHeaderChecksumError),
   #[error("Corrupt header: Unknown magic or version: {magic:?} {version:?}")]
   CorruptHeaderMagicVersion { magic: [u8; 6], version: [u8; 2] },
-  #[error("Corrupt pax length")]
-  CorruptPaxLength,
+  #[error(
+    "Corrupt pax length field: The length field is longer than {max_length_field_length} bytes"
+  )]
+  CorruptPaxLength { max_length_field_length: usize },
   #[error("Corrupt pax key")]
   CorruptPaxKey,
   #[error("Corrupt pax value")]
@@ -165,11 +161,18 @@ enum GnuLongNameType {
   LinkName,
 }
 
-pub struct StateExpectingOldGnuSparseExtendedHeader {
+struct StateReadingTarHeader {
+  /// The temporary buffer used for reading the tar header.
+  temp_tar_header_buffer: Cursor<[u8; BLOCK_SIZE]>,
+}
+
+pub struct StateReadingOldGnuSparseExtendedHeader {
   /// The size of the data section following the old gnu sparse extended headers.
   data_after_header: usize,
   /// The amount of padding after the data section.
   padding_after_data: usize,
+  /// The temporary buffer used for reading the tar header.
+  temp_old_gnu_sparse_header_buffer: Cursor<[u8; BLOCK_SIZE]>,
 }
 
 pub struct StateSkippingData {
@@ -212,11 +215,9 @@ struct StateParsingGnuSparse1_0 {
   padding_after: usize,
 }
 
-#[derive(Default)]
 enum TarParserState {
-  #[default]
-  ExpectingTarHeader,
-  ExpectingOldGnuSparseExtendedHeader(StateExpectingOldGnuSparseExtendedHeader),
+  ReadingTarHeader(StateReadingTarHeader),
+  ReadingOldGnuSparseExtendedHeader(StateReadingOldGnuSparseExtendedHeader),
   SkippingData(StateSkippingData),
   ParsingGnuLongName(StateParsingGnuLongName),
   ReadingFileData(StateReadingFileData),
@@ -224,6 +225,15 @@ enum TarParserState {
   ParsingGnuSparse1_0(StateParsingGnuSparse1_0),
   NoNextStateSet,
 }
+
+impl Default for TarParserState {
+  fn default() -> Self {
+    Self::ReadingTarHeader(StateReadingTarHeader {
+      temp_tar_header_buffer: Cursor::new([0; BLOCK_SIZE]),
+    })
+  }
+}
+
 pub struct TarParser {
   /// The extracted files.
   extracted_files: Vec<TarInode>,
@@ -241,6 +251,40 @@ pub struct TarParser {
   pax_parser: PaxParser,
   // Must be reset after each file:
   inode_state: InodeBuilder,
+}
+
+pub(crate) fn buffer_array<'a, const BUFFER_SIZE: usize>(
+  reader: &'a mut Cursor<&[u8]>,
+  temp_buffer: &'a mut Cursor<[u8; BUFFER_SIZE]>,
+) -> Result<Option<&'a [u8]>, TarParserError> {
+  // perform an incremental read into the tar header buffer
+  let bytes_to_read = temp_buffer.remaining().min(reader.remaining());
+
+  if bytes_to_read == BUFFER_SIZE {
+    // We can directly pass through the buffer so we don't have to copy it to the intermediate buffer.
+    return Ok(Some(
+      reader
+        .peek_exact(BUFFER_SIZE)
+        .expect("BUG: buffer_array direct patch through failed"),
+    ));
+  }
+
+  // read bytes into the tar header buffer
+  let read_bytes = reader
+    .read_exact(bytes_to_read)
+    .expect("BUG: buffer_array incremental read failed");
+  temp_buffer
+    .write_all(read_bytes, false)
+    .expect("BUG: buffer_array incremental write failed");
+  if temp_buffer.remaining() == 0 {
+    // We have a complete tar header block, so we can return it.
+    temp_buffer.set_position(0); // reset the cursor for the next read
+    let header_buffer = temp_buffer.after();
+    Ok(Some(header_buffer))
+  } else {
+    // We don't have a complete tar header block yet, so we return None.
+    Ok(None)
+  }
 }
 
 pub(crate) type InodeConfidentValue<T> = ConfidentValue<TarConfidence, T>;
@@ -295,7 +339,7 @@ impl TarParser {
     self
       .pax_parser
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
-    self.parser_state = TarParserState::ExpectingTarHeader;
+    self.parser_state = Default::default();
     core::mem::replace(&mut self.inode_state, Default::default())
   }
 
@@ -318,32 +362,21 @@ impl TarParser {
     &self.found_type_flags
   }
 
-  fn parse_old_gnu_sparse_instructions(&mut self, sparse_headers: &[GnuSparseInstruction]) {
-    debug_assert_eq!(self.inode_state.sparse_format, Some(SparseFormat::GnuOld));
+  fn parse_old_gnu_sparse_instructions(
+    inode_state: &mut InodeBuilder,
+    sparse_headers: &[GnuSparseInstruction],
+  ) {
+    debug_assert_eq!(inode_state.sparse_format, Some(SparseFormat::GnuOld));
     for sparse_header in sparse_headers {
       if sparse_header.is_empty() {
         continue;
       }
       if let Ok(instruction) = SparseFileInstruction::try_from(sparse_header) {
-        self.inode_state.sparse_file_instructions.push(instruction);
+        inode_state.sparse_file_instructions.push(instruction);
       } else {
         // If we can't parse the sparse header, we just ignore it.
         // This is a best-effort approach.
       }
-    }
-  }
-
-  fn map_reader_error(err: ReadExactError<Infallible>, reason: &'static str) -> TarParserError {
-    match err {
-      ReadExactError::Io(_) => panic!("BUG: Infallible read error"),
-      ReadExactError::UnexpectedEof {
-        min_readable_bytes,
-        bytes_requested,
-      } => TarParserError::InputBufferTooSmall {
-        actual_size: min_readable_bytes,
-        required_size: bytes_requested,
-        reason,
-      },
     }
   }
 
@@ -377,17 +410,23 @@ impl TarParser {
     }
   }
 
-  fn state_expecting_tar_header(
+  fn state_reading_tar_header(
     &mut self,
     reader: &mut Cursor<&[u8]>,
+    mut state: StateReadingTarHeader,
   ) -> Result<TarParserState, TarParserError> {
     // header parsing variables
     let mut typeflag = TarTypeFlag::UnknownTypeFlag(255);
     let mut old_gnu_sparse_is_extended = false;
 
-    let header_buffer = reader
-      .read_exact(512)
-      .map_err(|err| Self::map_reader_error(err, "Only full tar headers can be parsed"))?;
+    let header_buffer = match buffer_array(reader, &mut state.temp_tar_header_buffer)? {
+      Some(buffer) => buffer,
+      None => {
+        // We don't have a complete buffer yet, so we need to wait for more data.
+        return Ok(TarParserState::ReadingTarHeader(state));
+      },
+    };
+
     let old_header =
       V7Header::ref_from_bytes(&header_buffer).expect("BUG: Not enough bytes for OldHeader");
 
@@ -529,7 +568,7 @@ impl TarParser {
         // Handle sparse entries (Old GNU Format)
         if typeflag == TarTypeFlag::SparseOldGnu {
           self.inode_state.sparse_format = Some(SparseFormat::GnuOld);
-          self.parse_old_gnu_sparse_instructions(&gnu_additions.sparse);
+          Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &gnu_additions.sparse);
           old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
         }
 
@@ -633,14 +672,15 @@ impl TarParser {
       },
       TarTypeFlag::SparseOldGnu => {
         if old_gnu_sparse_is_extended {
-          TarParserState::ExpectingOldGnuSparseExtendedHeader(
-            StateExpectingOldGnuSparseExtendedHeader {
+          TarParserState::ReadingOldGnuSparseExtendedHeader(
+            StateReadingOldGnuSparseExtendedHeader {
               data_after_header,
               padding_after_data,
+              temp_old_gnu_sparse_header_buffer: Cursor::new([0; BLOCK_SIZE]),
             },
           )
         } else {
-          TarParserState::ExpectingTarHeader
+          TarParserState::default()
         }
       },
       TarTypeFlag::UnknownTypeFlag(_) => {
@@ -656,60 +696,45 @@ impl TarParser {
   fn state_skipping_data(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-    state_skipping_data: StateSkippingData,
+    state: StateSkippingData,
   ) -> Result<TarParserState, TarParserError> {
-    let StateSkippingData {
-      remaining_data,
-      context,
-    } = state_skipping_data;
-
     // incrementally skip the data
-    let bytes_to_skip = remaining_data.min(reader.remaining());
+    let bytes_to_skip = state.remaining_data.min(reader.remaining());
     reader
       .skip(bytes_to_skip)
       .expect("BUG: Incremental unknown data skipping failed");
-    let remaining_data = remaining_data - bytes_to_skip;
+    let remaining_data = state.remaining_data - bytes_to_skip;
     Ok(if remaining_data == 0 {
       // We are done skipping unknown data, so we reset the parser state.
-      TarParserState::ExpectingTarHeader
+      TarParserState::default()
     } else {
       // We still have some data to skip, so we keep the parser state.
-      TarParserState::SkippingData(StateSkippingData {
-        remaining_data,
-        context,
-      })
+      TarParserState::SkippingData(state)
     })
   }
 
   fn state_parsing_gnu_long_name(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-    state_parsing_gnu_long_name: StateParsingGnuLongName,
+    mut state: StateParsingGnuLongName,
   ) -> Result<TarParserState, TarParserError> {
-    let StateParsingGnuLongName {
-      remaining_data,
-      padding_after_data: padding_after,
-      long_name_type,
-      mut collected_name,
-    } = state_parsing_gnu_long_name;
-
     // incrementally read the long name
-    let bytes_to_read = remaining_data.min(reader.remaining());
+    let bytes_to_read = state.remaining_data.min(reader.remaining());
     let long_name_bytes = reader
       .read_exact(bytes_to_read)
       .expect("BUG: Incremental long name reading failed");
 
-    collected_name.extend_from_slice(long_name_bytes);
-    let remaining_data = remaining_data - bytes_to_read;
+    state.collected_name.extend_from_slice(long_name_bytes);
+    let remaining_data = state.remaining_data - bytes_to_read;
     Ok(if remaining_data == 0 {
       // We are done reading the long name, so we parse it.
-      let null_term = find_null_terminator_index(&collected_name);
-      collected_name.truncate(null_term);
-      let long_name = String::from_utf8(collected_name);
+      let null_term = find_null_terminator_index(&state.collected_name);
+      state.collected_name.truncate(null_term);
+      let long_name = String::from_utf8(state.collected_name);
 
       if let Ok(long_name) = long_name {
         // Now we can insert the long name into the inode state.
-        match long_name_type {
+        match state.long_name_type {
           GnuLongNameType::FileName => {
             self
               .inode_state
@@ -729,60 +754,48 @@ impl TarParser {
         // TODO: log this
       }
 
-      if padding_after > 0 {
+      if state.padding_after_data > 0 {
         // We have some padding after the long name, so we skip it.
         TarParserState::SkippingData(StateSkippingData {
-          remaining_data: padding_after,
+          remaining_data: state.padding_after_data,
           context: "Padding after long name",
         })
       } else {
         // We are done with the long name and there is no padding, so we reset the parser state.
-        TarParserState::ExpectingTarHeader
+        TarParserState::default()
       }
     } else {
       // We still have some data to read, so we keep the parser state.
-      TarParserState::ParsingGnuLongName(StateParsingGnuLongName {
-        remaining_data,
-        padding_after_data: padding_after,
-        long_name_type,
-        collected_name,
-      })
+      TarParserState::ParsingGnuLongName(state)
     })
   }
 
   fn state_expecting_old_gnu_sparse_extended_header(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-    state: StateExpectingOldGnuSparseExtendedHeader,
+    mut state: StateReadingOldGnuSparseExtendedHeader,
   ) -> Result<TarParserState, TarParserError> {
-    let StateExpectingOldGnuSparseExtendedHeader {
-      data_after_header,
-      padding_after_data,
-    } = state;
-
     // We must read the next block to get more sparse headers.
 
-    let extended_header_buffer = reader.read_exact(512).map_err(|err| {
-      Self::map_reader_error(
-        err,
-        "Only full old gnu sparse extended headers can be parsed",
-      )
-    })?;
+    let extended_header_buffer =
+      match buffer_array(reader, &mut state.temp_old_gnu_sparse_header_buffer)? {
+        Some(buffer) => buffer,
+        None => {
+          // We don't have a complete buffer yet, so we need to wait for more data.
+          return Ok(TarParserState::ReadingOldGnuSparseExtendedHeader(state));
+        },
+      };
+
     let extended_header = GnuHeaderExtSparse::ref_from_bytes(&extended_header_buffer)
       .expect("BUG: Not enough bytes for GnuHeaderExtSparse");
-    self.parse_old_gnu_sparse_instructions(&extended_header.sparse);
+    Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &extended_header.sparse);
     Ok(if extended_header.parse_is_extended() {
       // If the extended header is still extended, we need to read the next block.
-      TarParserState::ExpectingOldGnuSparseExtendedHeader(
-        StateExpectingOldGnuSparseExtendedHeader {
-          data_after_header,
-          padding_after_data,
-        },
-      )
+      TarParserState::ReadingOldGnuSparseExtendedHeader(state)
     } else {
       TarParserState::ReadingFileData(StateReadingFileData {
-        remaining_data: data_after_header,
-        padding_after: padding_after_data,
+        remaining_data: state.data_after_header,
+        padding_after: state.padding_after_data,
       })
     })
   }
@@ -790,41 +803,31 @@ impl TarParser {
   fn state_parsing_pax_data(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-    state_parsing_pax_data: StateParsingPaxData,
+    state: StateParsingPaxData,
   ) -> Result<TarParserState, TarParserError> {
-    let StateParsingPaxData {
-      remaining_data,
-      padding_after,
-      pax_mode,
-    } = state_parsing_pax_data;
-
     // incrementally read the PAX data
-    let bytes_to_read = remaining_data.min(reader.remaining());
+    let bytes_to_read = state.remaining_data.min(reader.remaining());
     let pax_bytes = reader
       .peek_exact(bytes_to_read)
       .expect("BUG: Incremental PAX data reading failed");
 
     let bytes_read = self.pax_parser.write(pax_bytes, false)?;
 
-    let remaining_data = remaining_data - bytes_read;
+    let remaining_data = state.remaining_data - bytes_read;
     Ok(if remaining_data == 0 {
       // We are done reading the PAX data, so we reset the parser state.
-      if padding_after > 0 {
+      if state.padding_after > 0 {
         // We have some padding after the PAX data, so we skip it.
         TarParserState::SkippingData(StateSkippingData {
-          remaining_data: padding_after,
+          remaining_data: state.padding_after,
           context: "Padding after PAX data",
         })
       } else {
-        TarParserState::ExpectingTarHeader
+        TarParserState::default()
       }
     } else {
       // We still have some data to read, so we keep the parser state.
-      TarParserState::ParsingPaxData(StateParsingPaxData {
-        remaining_data,
-        padding_after,
-        pax_mode,
-      })
+      TarParserState::ParsingPaxData(state)
     })
   }
 }
@@ -839,27 +842,25 @@ impl Write for TarParser {
 
     let parser_state = core::mem::replace(&mut self.parser_state, TarParserState::NoNextStateSet);
 
-    let next_state = match parser_state {
-      TarParserState::ExpectingTarHeader => self.state_expecting_tar_header(&mut reader)?,
-      TarParserState::SkippingData(state_skipping_data) => {
-        self.state_skipping_data(&mut reader, state_skipping_data)?
+    let next_state: TarParserState = match parser_state {
+      TarParserState::ReadingTarHeader(state) => {
+        self.state_reading_tar_header(&mut reader, state)?
       },
-      TarParserState::ParsingGnuLongName(state_parsing_gnu_long_name) => {
-        self.state_parsing_gnu_long_name(&mut reader, state_parsing_gnu_long_name)?
+      TarParserState::SkippingData(state) => self.state_skipping_data(&mut reader, state)?,
+      TarParserState::ParsingGnuLongName(state) => {
+        self.state_parsing_gnu_long_name(&mut reader, state)?
       },
-      TarParserState::ExpectingOldGnuSparseExtendedHeader(state) => {
+      TarParserState::ReadingOldGnuSparseExtendedHeader(state) => {
         self.state_expecting_old_gnu_sparse_extended_header(&mut reader, state)?
       },
-      TarParserState::ParsingPaxData(state_parsing_pax_data) => {
-        self.state_parsing_pax_data(&mut reader, state_parsing_pax_data)?
-      },
+      TarParserState::ParsingPaxData(state) => self.state_parsing_pax_data(&mut reader, state)?,
       TarParserState::NoNextStateSet => {
         panic!("BUG: No next state set in TarParser");
       },
-      TarParserState::ParsingGnuSparse1_0(state_parsing_gnu_sparse_1_0) => {
+      TarParserState::ParsingGnuSparse1_0(state) => {
         todo!()
       },
-      TarParserState::ReadingFileData(state_reading_file_data) => {
+      TarParserState::ReadingFileData(state) => {
         todo!()
       },
     };

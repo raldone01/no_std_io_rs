@@ -1,3 +1,5 @@
+use core::panic;
+
 use alloc::{string::String, vec::Vec};
 use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
@@ -15,7 +17,7 @@ use crate::{
     },
     InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat, TarParserError,
   },
-  Cursor, Write,
+  CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, Write, WriteAllError,
 };
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -77,24 +79,38 @@ impl<T> PaxConfidentValue<T> {
   }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct StateParsingNewKV {
+  kv_cursor: Cursor<[u8; 20]>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct StateParsingKey {
   length: usize,
   keyword: Vec<u8>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct StateParsingValue {
   key: String,
   length_after_equals: usize,
   value: Vec<u8>,
 }
 
-#[derive(Default)]
+#[derive(Debug, PartialEq, Eq)]
 enum PaxParserState {
-  #[default]
-  ExpectingNextKV,
+  ParsingNewKV(StateParsingNewKV),
   ParsingKey(StateParsingKey),
   ParsingValue(StateParsingValue),
   NoNextStateSet,
+}
+
+impl Default for PaxParserState {
+  fn default() -> Self {
+    PaxParserState::ParsingNewKV(StateParsingNewKV {
+      kv_cursor: Cursor::new([0; 20]),
+    })
+  }
 }
 
 #[derive(Default)]
@@ -448,41 +464,44 @@ impl PaxParser {
   /// "%d %s=%s\n", <length>, <keyword>, <value>
   ///
   /// This function parses the length decimal and computes the values for the parsing key state.
-  fn state_expecting_next_kv(
+  fn state_parsing_new_kv(
     &mut self,
     cursor: &mut Cursor<&[u8]>,
+    mut state: StateParsingNewKV,
   ) -> Result<PaxParserState, TarParserError> {
-    let mut length_bytes = [0u8; 20]; // Maximum length of a decimal number in bytes
-    let mut length_index = 0;
-
     // Read the length until we hit a space or newline
-    while let Some(byte) = cursor.full_buffer().get(cursor.position()) {
-      if *byte == b' ' || *byte == b'\n' {
-        break;
-      }
-      if length_index < length_bytes.len() {
-        length_bytes[length_index] = *byte;
-        length_index += 1;
-      } else {
-        // Too long
-        return Err(TarParserError::CorruptPaxLength);
-      }
-      cursor.set_position(cursor.position() + 1);
+    let copy_buffered_until_result = cursor.copy_buffered_until(
+      &mut &mut state.kv_cursor,
+      false,
+      |byte: &u8| *byte == b' ' || *byte == b'\n',
+      false,
+    );
+    match copy_buffered_until_result {
+      Ok(_) => {},
+      Err(CopyUntilError::DelimiterNotFound { bytes_read }) => {},
+      Err(
+        CopyUntilError::IoRead(..) | CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. }),
+      ) => panic!("BUG: Infallible error in read operation"),
+      Err(CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. }))) => {
+        return Ok(PaxParserState::ParsingNewKV(state))
+      },
     }
 
     // Convert the length bytes to a usize
-    let length_str = core::str::from_utf8(&length_bytes[..length_index]).unwrap_or("0");
+    let length_str = core::str::from_utf8(state.kv_cursor.before()).unwrap_or("0");
     let length = match length_str.parse::<usize>() {
       Ok(value) => value,
-      Err(_) => return Err(TarParserError::CorruptPaxLength),
+      Err(_) => {
+        return Err(TarParserError::CorruptPaxLength {
+          max_length_field_length: state.kv_cursor.full_buffer().len(),
+        })
+      },
     };
 
-    // +1 for the space
-    cursor.set_position(cursor.position() + 1);
-    let length = length.saturating_sub(length_index + 1);
+    let length = length.saturating_sub(state.kv_cursor.before().len() + 1);
     if length == 0 {
       // If the length is 0, we are done with this key-value pair
-      return Ok(PaxParserState::ExpectingNextKV);
+      return Ok(PaxParserState::default());
     }
     Ok(PaxParserState::ParsingKey(StateParsingKey {
       length,
@@ -572,7 +591,7 @@ impl PaxParser {
     self.ingest_attribute(self.current_pax_mode, state.key, value);
 
     // Ready for the next key-value pair
-    Ok(PaxParserState::ExpectingNextKV)
+    Ok(PaxParserState::default())
   }
 }
 
@@ -586,13 +605,9 @@ impl Write for PaxParser {
     let parser_state = core::mem::replace(&mut self.state, PaxParserState::NoNextStateSet);
 
     self.state = match parser_state {
-      PaxParserState::ExpectingNextKV => self.state_expecting_next_kv(&mut cursor)?,
-      PaxParserState::ParsingKey(state_parsing_key) => {
-        self.state_parsing_key(&mut cursor, state_parsing_key)?
-      },
-      PaxParserState::ParsingValue(state_parsing_value) => {
-        self.state_parsing_value(&mut cursor, state_parsing_value)?
-      },
+      PaxParserState::ParsingNewKV(state) => self.state_parsing_new_kv(&mut cursor, state)?,
+      PaxParserState::ParsingKey(state) => self.state_parsing_key(&mut cursor, state)?,
+      PaxParserState::ParsingValue(state) => self.state_parsing_value(&mut cursor, state)?,
       PaxParserState::NoNextStateSet => {
         panic!("BUG: No next state set in PaxParser");
       },
@@ -640,7 +655,7 @@ mod tests {
     parser.write_all(data, false).unwrap();
 
     assert_eq!(parser.path.get(), Some(&RelativePathBuf::from("some/file")));
-    assert!(matches!(parser.state, PaxParserState::ExpectingNextKV));
+    assert_eq!(parser.state, PaxParserState::default());
   }
 
   #[test]
@@ -650,7 +665,7 @@ mod tests {
     parser.write_all(data, false).unwrap();
 
     assert_eq!(parser.path.get(), Some(&RelativePathBuf::from("some/file")));
-    assert!(matches!(parser.state, PaxParserState::ExpectingNextKV));
+    assert_eq!(parser.state, PaxParserState::default());
   }
 
   #[test]
@@ -701,7 +716,9 @@ mod tests {
     let data = b"abc path=foo\n";
     assert_eq!(
       parser.write_all(data, false),
-      Err(WriteAllError::Io(TarParserError::CorruptPaxLength))
+      Err(WriteAllError::Io(TarParserError::CorruptPaxLength {
+        max_length_field_length: 20,
+      }))
     );
   }
 

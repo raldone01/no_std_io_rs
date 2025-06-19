@@ -1,6 +1,7 @@
 use crate::{BufferedRead, Read, ReadExactError};
 
 /// See [`BufferedRead`] for more details.
+#[derive(Debug, PartialEq, Eq)]
 pub struct ForkedBufferedReader<'a, R: BufferedRead + ?Sized> {
   buffered_reader: &'a mut R,
   position: usize,

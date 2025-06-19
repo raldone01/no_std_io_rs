@@ -12,11 +12,8 @@ pub enum CopyError<RE, WE> {
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum CopyUntilError<RE, WE> {
-  #[error("Delimiter byte {delimiter_byte:?} not found after reading {bytes_read} bytes")]
-  DelimiterNotFound {
-    delimiter_byte: u8,
-    bytes_read: usize,
-  },
+  #[error("Delimiter predicate not fulfilled after reading {bytes_read} bytes")]
+  DelimiterNotFound { bytes_read: usize },
   #[error("Underlying read error: {0:?}")]
   IoRead(RE),
   #[error("Underlying write error: {0:?}")]
@@ -60,11 +57,11 @@ pub trait Copy: Read {
   /// Note: If the reader supports buffered reading, consider using `copy_buffered_until` instead for better performance.
   ///
   /// Returns the total number of bytes copied.
-  fn copy_until<W: Write + ?Sized>(
+  fn copy_until<W: Write + ?Sized, F: FnMut(&u8) -> bool>(
     &mut self,
-    delimiter_byte: u8,
     writer: &mut W,
     sync_hint: bool,
+    mut delimiter_predicate: F,
     write_delimiter: bool,
   ) -> Result<usize, CopyUntilError<Self::ReadError, W::WriteError>> {
     let mut total_bytes = 0;
@@ -76,12 +73,13 @@ pub trait Copy: Read {
         .map_err(CopyUntilError::IoRead)?;
       if bytes_read == 0 {
         return Err(CopyUntilError::DelimiterNotFound {
-          delimiter_byte,
           bytes_read: total_bytes,
         });
       }
 
-      if !write_delimiter && transfer_byte[0] == delimiter_byte {
+      let found_delimiter = delimiter_predicate(&transfer_byte[0]);
+
+      if !write_delimiter && found_delimiter {
         break; // Delimiter found
       }
 
@@ -91,7 +89,7 @@ pub trait Copy: Read {
 
       total_bytes += bytes_read;
 
-      if transfer_byte[0] == delimiter_byte {
+      if found_delimiter {
         break; // Delimiter found
       }
     }
@@ -132,11 +130,11 @@ pub trait CopyBuffered: BufferedRead {
   /// Streams bytes from the reader to the writer until a specific delimiter byte is encountered.
   ///
   /// Returns the total number of bytes copied.
-  fn copy_buffered_until<W: Write + ?Sized>(
+  fn copy_buffered_until<W: Write + ?Sized, F: FnMut(&u8) -> bool>(
     &mut self,
-    delimiter_byte: u8,
     writer: &mut W,
     sync_hint: bool,
+    mut delimiter_predicate: F,
     write_delimiter: bool,
   ) -> Result<usize, CopyUntilError<Self::UnderlyingReadExactError, W::WriteError>> {
     let mut total_bytes = 0;
@@ -145,14 +143,13 @@ pub trait CopyBuffered: BufferedRead {
       let bytes_read = self.peek_buffered().map_err(CopyUntilError::IoRead)?;
       if bytes_read.is_empty() {
         return Err(CopyUntilError::DelimiterNotFound {
-          delimiter_byte,
           bytes_read: total_bytes,
         });
       }
 
       // find the position of the delimiter byte
       let mut delimiter_found = false;
-      let bytes_read = if let Some(pos) = bytes_read.iter().position(|&b| b == delimiter_byte) {
+      let bytes_read = if let Some(pos) = bytes_read.iter().position(&mut delimiter_predicate) {
         delimiter_found = true;
         if write_delimiter {
           &bytes_read[..=pos] // include the delimiter byte in the write
@@ -212,9 +209,9 @@ mod tests {
 
     let mut input_reader = input.as_ref();
     let mut output = Vec::new();
-    let delimiter = b',';
+    let delimiter = |byte: &u8| *byte == b',';
     let bytes_copied = input_reader
-      .copy_until(delimiter, &mut output, false, true)
+      .copy_until(&mut output, false, delimiter, true)
       .unwrap();
     assert_eq!(bytes_copied, 6);
     assert_eq!(output, b"Hello,");
@@ -223,7 +220,7 @@ mod tests {
     let mut input_reader = input.as_ref();
     let mut output = Vec::new();
     let bytes_copied = input_reader
-      .copy_until(delimiter, &mut output, false, false)
+      .copy_until(&mut output, false, delimiter, false)
       .unwrap();
     assert_eq!(bytes_copied, 5);
     assert_eq!(output, b"Hello");
@@ -246,9 +243,9 @@ mod tests {
 
     let mut input_reader = input.as_ref();
     let mut output = Vec::new();
-    let delimiter = b',';
+    let delimiter = |byte: &u8| *byte == b',';
     let bytes_copied = input_reader
-      .copy_buffered_until(delimiter, &mut output, false, true)
+      .copy_until(&mut output, false, delimiter, true)
       .unwrap();
     assert_eq!(bytes_copied, 6);
     assert_eq!(output, b"Hello,");
@@ -257,7 +254,7 @@ mod tests {
     let mut input_reader = input.as_ref();
     let mut output = Vec::new();
     let bytes_copied = input_reader
-      .copy_buffered_until(delimiter, &mut output, false, false)
+      .copy_until(&mut output, false, delimiter, false)
       .unwrap();
     assert_eq!(bytes_copied, 5);
     assert_eq!(output, b"Hello");

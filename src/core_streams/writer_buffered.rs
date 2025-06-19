@@ -3,8 +3,9 @@ use thiserror::Error;
 use crate::{Write, WriteAll as _, WriteAllError};
 
 /// A buffered writer accumulates data until it reaches a certain size before writing it to the target writer.
-pub struct BufferedWriter<W: Write, B: AsMut<[u8]>> {
-  target_writer: W,
+#[derive(Debug, PartialEq, Eq)]
+pub struct BufferedWriter<'a, W: Write + ?Sized, B: AsMut<[u8]>> {
+  target_writer: &'a mut W,
   buffer: B,
   position: usize,
   always_chunk: bool,
@@ -18,10 +19,10 @@ pub enum BufferedWriterWriteError<WWE, WFE> {
   IoFlush(WFE),
 }
 
-impl<W: Write, B: AsMut<[u8]>> BufferedWriter<W, B> {
+impl<'a, W: Write + ?Sized, B: AsMut<[u8]>> BufferedWriter<'a, W, B> {
   /// Creates a new `BufferedWriter` with the specified chunk buffer size.
   #[must_use]
-  pub fn new(target_writer: W, internal_buffer: B, always_chunk: bool) -> Self {
+  pub fn new(target_writer: &'a mut W, internal_buffer: B, always_chunk: bool) -> Self {
     Self {
       target_writer,
       buffer: internal_buffer,
@@ -43,7 +44,7 @@ impl<W: Write, B: AsMut<[u8]>> BufferedWriter<W, B> {
   }
 }
 
-impl<W: Write, B: AsMut<[u8]>> Write for BufferedWriter<W, B> {
+impl<W: Write + ?Sized, B: AsMut<[u8]>> Write for BufferedWriter<'_, W, B> {
   type WriteError = BufferedWriterWriteError<W::WriteError, W::FlushError>;
   type FlushError = BufferedWriterWriteError<W::WriteError, W::FlushError>;
 

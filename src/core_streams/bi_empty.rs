@@ -5,7 +5,7 @@ use crate::{Read, Write};
 /// [`EmptyStream`] ignores any data written via [`Write`], and will always be empty (returning zero bytes) when read via [`Read`].
 ///
 /// This is the equivalent of `std::io::sink()`, `std::io::empty()`, `std::io::Empty` and `/dev/null`.
-#[derive(Default)]
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct EmptyStream;
 
 impl EmptyStream {
