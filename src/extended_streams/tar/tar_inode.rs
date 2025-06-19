@@ -93,16 +93,16 @@ pub enum FileData {
 }
 
 pub struct RegularFileEntry {
-  continuous: bool,
-  data: FileData,
+  pub continuous: bool,
+  pub data: FileData,
 }
 
 pub struct HardLinkEntry {
-  link_target: RelativePathBuf,
+  pub link_target: RelativePathBuf,
 }
 
 pub struct SymbolicLinkEntry {
-  link_target: RelativePathBuf,
+  pub link_target: RelativePathBuf,
 }
 
 pub struct CharacterDeviceEntry {

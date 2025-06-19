@@ -19,15 +19,6 @@ pub trait WriteAll: Write {
     &mut self,
     input_buffer: &[u8],
     sync_hint: bool,
-  ) -> Result<(), WriteAllError<Self::WriteError>>;
-}
-
-/// Blanket implementation for all `Write` implementors.
-impl<W: Write + ?Sized> WriteAll for W {
-  fn write_all(
-    &mut self,
-    input_buffer: &[u8],
-    sync_hint: bool,
   ) -> Result<(), WriteAllError<Self::WriteError>> {
     let mut buf = input_buffer;
     while !buf.is_empty() {
@@ -44,3 +35,6 @@ impl<W: Write + ?Sized> WriteAll for W {
     Ok(())
   }
 }
+
+/// Blanket implementation for all `Write` implementers.
+impl<W: Write + ?Sized> WriteAll for W {}

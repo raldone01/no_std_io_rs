@@ -464,7 +464,7 @@ impl PaxParser {
         length_bytes[length_index] = *byte;
         length_index += 1;
       } else {
-        // Too long, reset and return to expecting next KV state
+        // Too long
         return Err(TarParserError::CorruptPaxLength);
       }
       cursor.set_position(cursor.position() + 1);

@@ -22,6 +22,30 @@ impl<'a, R: BufferedRead + ?Sized> ForkedBufferedReader<'a, R> {
   pub fn bytes_read(&self) -> usize {
     self.position
   }
+
+  fn read_internal(
+    &mut self,
+    byte_count: usize,
+    peek: bool,
+  ) -> Result<&[u8], ReadExactError<R::UnderlyingReadExactError>> {
+    let full_buffer = self
+      .buffered_reader
+      .peek_exact(self.position + byte_count)?;
+    let sliced_buffer = &full_buffer[self.position..];
+    if !peek {
+      self.position += byte_count;
+    }
+    Ok(sliced_buffer)
+  }
+
+  fn read_buffered_internal(&mut self, peek: bool) -> Result<&[u8], R::UnderlyingReadExactError> {
+    let full_buffer = self.buffered_reader.peek_buffered()?;
+    let sliced_buffer = &full_buffer[self.position..];
+    if !peek {
+      self.position += sliced_buffer.len();
+    }
+    Ok(sliced_buffer)
+  }
 }
 
 impl<'a, R: BufferedRead + ?Sized> BufferedRead for ForkedBufferedReader<'a, R> {
@@ -42,30 +66,26 @@ impl<'a, R: BufferedRead + ?Sized> BufferedRead for ForkedBufferedReader<'a, R> 
     self.read_exact(byte_count).map(|_| ())
   }
 
-  fn buffer_size_hint(&self) -> usize {
-    self.buffered_reader.buffer_size_hint()
+  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(false)
+  }
+
+  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(true)
   }
 
   fn read_exact(
     &mut self,
     byte_count: usize,
   ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>> {
-    let full_buffer = self
-      .buffered_reader
-      .peek_exact(self.position + byte_count)?;
-    let sliced_buffer = &full_buffer[self.position..];
-    self.position += byte_count;
-    Ok(sliced_buffer)
+    self.read_internal(byte_count, false)
   }
 
   fn peek_exact(
     &mut self,
     byte_count: usize,
   ) -> Result<&[u8], ReadExactError<Self::UnderlyingReadExactError>> {
-    let full_buffer = self
-      .buffered_reader
-      .peek_exact(self.position + byte_count)?;
-    Ok(&full_buffer[self.position..])
+    self.read_internal(byte_count, true)
   }
 }
 

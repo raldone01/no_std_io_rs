@@ -98,6 +98,24 @@ impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
     let result = &self.buffer.as_mut()[..byte_count];
     Ok(result)
   }
+
+  fn read_buffered_internal(
+    &mut self,
+    peek: bool,
+  ) -> Result<&[u8], BufferedReaderReadError<R::ReadError, B::ResizeError>> {
+    let buffer_size = self.buffer.as_ref().len();
+    self
+      .read_exact_internal(buffer_size, false, peek)
+      .map_err(|e| match e {
+        ReadExactError::Io(e) => e,
+        ReadExactError::UnexpectedEof { .. } => {
+          panic!(
+            "Buffered read should not return EOF, remaining bytes: {}",
+            buffer_size
+          )
+        },
+      })
+  }
 }
 
 impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
@@ -167,8 +185,12 @@ impl<R: Read, B: BackingBuffer> BufferedRead for BufferedReader<R, B> {
       .map(|_| ())
   }
 
-  fn buffer_size_hint(&self) -> usize {
-    self.buffer.as_ref().len()
+  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(false)
+  }
+
+  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(true)
   }
 
   fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<Self::ReadError>> {

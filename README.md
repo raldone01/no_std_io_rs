@@ -1,11 +1,30 @@
 # no_std_io
 
 Features of this crate:
-* Create uncompressed and compressed tarballs. (`ustar` only)
-* Extract files + limited metadata from uncompressed and compressed tarballs. (`ustar`, `v7`, `pax` and `gnu`)
-* Fully `no_std + alloc` compatible.
-* Reimplementation of a subset of `std::io` functionality.
-* A usable streaming frontend API for the `miniz_oxide` crate.
+* A `no_std + alloc` optimized reimplementation of the streaming infrastructure of `std::io`.
+* Custom `Read` and `Write` traits that support user defined error types.
+
+## Extended streams
+
+### CompressedReader and CompressedWriter
+
+- Fully `no_std + alloc` compatible.
+- A usable streaming frontend API for the `miniz_oxide` crate.
+- Supports concatenated gzip, zlib and raw deflate streams.
+- Supports auto detection of gzip, zlib, raw deflate, uncompressed streams.
+
+### Tar Parser
+
+- Fully `no_std + alloc` compatible.
+- A streaming implementation that implements the `Write` trait.
+- Supports all common tar formats: `ustar`, `v7`, `pax`, and `gnu`.
+- It is very forgiving and strives to limit panics and resource exhaustion attacks.
+- Most commonly used metadata is preserved.
+
+### Tar Creator
+
+- Creates tarballs using the `pax` format.
+- Writing the gnu sparse `1.0` format is also supported.
 
 # TODO crate:
 
@@ -34,6 +53,7 @@ Features of this crate:
 * Make tar creator, extractor, gz compressor, gz decompressor into Read/Write.
 * gen tar
 * gnu `sparse` files
+* Cleanup the pax parser and how it uses the cursor. to do that add write_until and read_until
 
 # TODO (long term):
 * Add filesystem trait and filesystem agnostic file api. (Default ship a memory based implementation serialize to tar_gz and extract from tar_gz.)

@@ -1,4 +1,7 @@
-use core::cell::{Cell, RefCell, UnsafeCell};
+use core::{
+  cell::{Cell, RefCell, UnsafeCell},
+  convert::Infallible,
+};
 
 use alloc::boxed::Box;
 
@@ -28,7 +31,7 @@ impl<R: Read + ?Sized> Read for &mut R {
 fn read_slice<T: AsRef<[u8]> + ?Sized>(
   slice: &mut T,
   output_buffer: &mut [u8],
-) -> Result<usize, core::convert::Infallible> {
+) -> Result<usize, Infallible> {
   let slice = &mut slice.as_ref();
 
   let n = core::cmp::min(output_buffer.len(), slice.len());
@@ -37,40 +40,34 @@ fn read_slice<T: AsRef<[u8]> + ?Sized>(
   Ok(n)
 }
 
-impl<R: Read + ?Sized> Read for Box<R> {
-  type ReadError = R::ReadError;
+// --- Read implementations for common smart pointer types ---
 
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    self.as_mut().read(output_buffer)
-  }
+macro_rules! impl_read_for_wrapper {
+  ( $( ($wrapper:ty, $accessor:ident) ),* ) => {
+      $(
+          impl<R: Read + ?Sized> Read for $wrapper {
+              type ReadError = R::ReadError;
+
+              fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
+                  self.$accessor().read(output_buffer)
+              }
+          }
+      )*
+  };
 }
 
-impl<R: Read + ?Sized> Read for RefCell<R> {
-  type ReadError = R::ReadError;
+// Now, use the macro to generate the implementations.
+impl_read_for_wrapper!(
+  (Box<R>, as_mut),
+  (RefCell<R>, get_mut),
+  (Cell<R>, get_mut),
+  (UnsafeCell<R>, get_mut)
+);
 
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    self.get_mut().read(output_buffer)
-  }
-}
-
-impl<R: Read + ?Sized> Read for Cell<R> {
-  type ReadError = R::ReadError;
-
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    self.get_mut().read(output_buffer)
-  }
-}
-
-impl<R: Read + ?Sized> Read for UnsafeCell<R> {
-  type ReadError = R::ReadError;
-
-  fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
-    self.get_mut().read(output_buffer)
-  }
-}
+// --- Read implementations for slice types ---
 
 impl Read for [u8] {
-  type ReadError = core::convert::Infallible;
+  type ReadError = Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     read_slice(self, output_buffer)
@@ -78,7 +75,7 @@ impl Read for [u8] {
 }
 
 impl Read for &[u8] {
-  type ReadError = core::convert::Infallible;
+  type ReadError = Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     read_slice(self, output_buffer)
@@ -86,7 +83,7 @@ impl Read for &[u8] {
 }
 
 impl<const N: usize> Read for [u8; N] {
-  type ReadError = core::convert::Infallible;
+  type ReadError = Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     read_slice(self, output_buffer)
@@ -94,12 +91,14 @@ impl<const N: usize> Read for [u8; N] {
 }
 
 impl<const N: usize> Read for &[u8; N] {
-  type ReadError = core::convert::Infallible;
+  type ReadError = Infallible;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
     read_slice(self, output_buffer)
   }
 }
+
+// --- ReadLimited trait ---
 
 pub trait ReadLimited: Read {
   /// Creates a new reader that limits the number of bytes read to `read_limit_bytes`.

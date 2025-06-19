@@ -16,11 +16,6 @@ pub enum ReadAllError<U> {
 /// Extension trait that provides a `read_all` method for any `Read` implementer.
 pub trait ReadAll: Read {
   /// Reads the entire buffer, retrying partial reads.
-  fn read_all(&mut self, output_buffer: &mut [u8]) -> Result<(), ReadAllError<Self::ReadError>>;
-}
-
-/// Blanket implementation for all `Read` implementors.
-impl<R: Read + ?Sized> ReadAll for R {
   fn read_all(&mut self, output_buffer: &mut [u8]) -> Result<(), ReadAllError<Self::ReadError>> {
     let requested_bytes = output_buffer.len();
     let mut buf = output_buffer;
@@ -44,3 +39,6 @@ impl<R: Read + ?Sized> ReadAll for R {
     Ok(())
   }
 }
+
+/// Blanket implementation for all `Read` implementers.
+impl<R: Read + ?Sized> ReadAll for R {}

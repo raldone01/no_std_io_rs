@@ -20,7 +20,8 @@ use crate::{
       GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
       UstarHeaderAdditions, V7Header,
     },
-    BlockDeviceEntry, CharacterDeviceEntry, FileEntry, FilePermissions, TarInode,
+    BlockDeviceEntry, CharacterDeviceEntry, FileEntry, FilePermissions, HardLinkEntry,
+    SymbolicLinkEntry, TarInode,
   },
   BufferedRead as _, ReadExactError, Write,
 };
@@ -204,6 +205,13 @@ struct StateParsingPaxData {
   pax_mode: PaxConfidence,
 }
 
+struct StateParsingGnuSparse1_0 {
+  /// The amount of data that is still remaining to be read.
+  remaining_data: usize,
+  /// The amount of padding after the file data.
+  padding_after: usize,
+}
+
 #[derive(Default)]
 enum TarParserState {
   #[default]
@@ -213,6 +221,7 @@ enum TarParserState {
   ParsingGnuLongName(StateParsingGnuLongName),
   ReadingFileData(StateReadingFileData),
   ParsingPaxData(StateParsingPaxData),
+  ParsingGnuSparse1_0(StateParsingGnuSparse1_0),
   NoNextStateSet,
 }
 pub struct TarParser {
@@ -263,6 +272,7 @@ pub(crate) struct InodeBuilder {
   pub(crate) dev_major: u32,
   pub(crate) dev_minor: u32,
   pub(crate) data_after_header_size: InodeConfidentValue<usize>,
+  pub(crate) continuous_file: bool,
 }
 
 impl TarParser {
@@ -347,6 +357,24 @@ impl TarParser {
     //let inode = TarInode {
 
     todo!()
+  }
+
+  fn compute_file_parsing_state(
+    &mut self,
+    data_after_header: usize,
+    padding_after_data: usize,
+  ) -> TarParserState {
+    if self.inode_state.sparse_format == Some(SparseFormat::Gnu1_0) {
+      TarParserState::ParsingGnuSparse1_0(StateParsingGnuSparse1_0 {
+        remaining_data: data_after_header,
+        padding_after: padding_after_data,
+      })
+    } else {
+      TarParserState::ReadingFileData(StateReadingFileData {
+        remaining_data: data_after_header,
+        padding_after: padding_after_data,
+      })
+    }
   }
 
   fn state_expecting_tar_header(
@@ -529,6 +557,30 @@ impl TarParser {
 
     // now we match on the typeflag
     Ok(match typeflag {
+      TarTypeFlag::RegularFile => {
+        self.inode_state.continuous_file = false;
+        self.compute_file_parsing_state(data_after_header, padding_after_data)
+      },
+      TarTypeFlag::HardLink => self.finish_inode(|selv| {
+        FileEntry::HardLink(HardLinkEntry {
+          link_target: selv
+            .inode_state
+            .link_target
+            .get()
+            .map(|s| RelativePathBuf::from(s))
+            .unwrap_or_default(),
+        })
+      }),
+      TarTypeFlag::SymbolicLink => self.finish_inode(|selv| {
+        FileEntry::SymbolicLink(SymbolicLinkEntry {
+          link_target: selv
+            .inode_state
+            .link_target
+            .get()
+            .map(|s| RelativePathBuf::from(s))
+            .unwrap_or_default(),
+        })
+      }),
       TarTypeFlag::CharacterDevice => self.finish_inode(|selv| {
         FileEntry::CharacterDevice(CharacterDeviceEntry {
           major: selv.inode_state.dev_major,
@@ -541,7 +593,12 @@ impl TarParser {
           minor: selv.inode_state.dev_minor,
         })
       }),
+      TarTypeFlag::Directory => self.finish_inode(|_| FileEntry::Directory),
       TarTypeFlag::Fifo => self.finish_inode(|_| FileEntry::Fifo),
+      TarTypeFlag::ContinuousFile => {
+        self.inode_state.continuous_file = true;
+        self.compute_file_parsing_state(data_after_header, padding_after_data)
+      },
       TarTypeFlag::PaxExtendedHeader => {
         self.pax_parser.recover(PaxConfidence::LOCAL);
         TarParserState::ParsingPaxData(StateParsingPaxData {
@@ -593,7 +650,6 @@ impl TarParser {
           context: "Unknown typeflag",
         })
       },
-      _ => todo!(),
     })
   }
 
@@ -800,7 +856,10 @@ impl Write for TarParser {
       TarParserState::NoNextStateSet => {
         panic!("BUG: No next state set in TarParser");
       },
-      _ => {
+      TarParserState::ParsingGnuSparse1_0(state_parsing_gnu_sparse_1_0) => {
+        todo!()
+      },
+      TarParserState::ReadingFileData(state_reading_file_data) => {
         todo!()
       },
     };

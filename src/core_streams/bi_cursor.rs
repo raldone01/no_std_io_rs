@@ -182,6 +182,20 @@ impl<B: AsRef<[u8]>> Cursor<B> {
     }
     Ok(sliced_buffer)
   }
+
+  fn read_buffered_internal(
+    &mut self,
+    peek: bool,
+  ) -> Result<&[u8], <Self as BufferedRead>::UnderlyingReadExactError> {
+    let remaining = self.remaining();
+    match self.read_exact_internal(remaining, peek) {
+      Ok(bytes) => Ok(bytes),
+      Err(ReadExactError::UnexpectedEof { .. }) => panic!(
+        "Buffered read should not return EOF, remaining bytes: {}",
+        remaining
+      ),
+    }
+  }
 }
 
 impl<B: AsRef<[u8]>> BufferedRead for Cursor<B> {
@@ -200,8 +214,12 @@ impl<B: AsRef<[u8]>> BufferedRead for Cursor<B> {
     Ok(())
   }
 
-  fn buffer_size_hint(&self) -> usize {
-    self.split().1.len()
+  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(false)
+  }
+
+  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(true)
   }
 
   fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<Self::ReadError>> {
