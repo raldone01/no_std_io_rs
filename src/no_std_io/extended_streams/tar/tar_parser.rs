@@ -59,8 +59,8 @@ impl From<PaxConfidence> for TarConfidence {
 
 #[derive(Clone)]
 pub(crate) struct SparseFileInstruction {
-  offset_before: u64,
-  data_size: u64,
+  pub(crate) offset_before: u64,
+  pub(crate) data_size: u64,
 }
 
 impl TryFrom<&GnuSparseInstruction> for SparseFileInstruction {

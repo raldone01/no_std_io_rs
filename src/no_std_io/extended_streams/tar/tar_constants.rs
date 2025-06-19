@@ -442,8 +442,8 @@ pub mod pax_keys_well_known {
     pub const GNU_SPARSE_DATA_BLOCK_OFFSET_0_0: &str = "GNU.sparse.offset";
     /// Size of the data block. (0.0)
     pub const GNU_SPARSE_DATA_BLOCK_SIZE_0_0: &str = "GNU.sparse.numbytes";
-    /// The sparse map is a series of comma-separated values
-    /// in the format `offset,size[,offset:size,...]` (0.1)
+    /// The sparse map is a series of comma-separated decimal values
+    /// in the format `offset,size[,offset,size,...]` (0.1)
     pub const GNU_SPARSE_MAP_0_1: &str = "GNU.sparse.map";
   }
   pub const ATIME: &str = "atime";

@@ -10,13 +10,16 @@ pub struct ConfidentValue<C: Ord, T> {
 }
 
 impl<C: Ord, T> ConfidentValue<C, T> {
-  /// Creates a new, empty `ConfidentValue`.
-  pub fn new() -> Self {
-    Default::default()
+  #[must_use]
+  pub fn new(initial_confidence: C, initial_value: T) -> Self {
+    Self {
+      value: Some((initial_confidence, initial_value)),
+    }
   }
 
   /// Returns `true` if the currently stored value has a strictly greater
   /// confidence than the new one being considered.
+  #[must_use]
   fn has_superior_confidence(&self, new_confidence: &C) -> bool {
     self
       .value
@@ -34,17 +37,20 @@ impl<C: Ord, T> ConfidentValue<C, T> {
   }
 
   /// Returns a reference to the stored value, if any.
+  #[must_use]
   pub fn get(&self) -> Option<&T> {
     self.value.as_ref().map(|(_, v)| v)
   }
 
   /// Returns a reference to the confidence and value, if any.
+  #[must_use]
   pub fn get_with_confidence(&self) -> Option<(&C, &T)> {
     self.value.as_ref().map(|(c, v)| (c, v))
   }
 
   /// Returns a reference to the value only if its confidence is less than or
   /// equal to the provided `max_confidence`.
+  #[must_use]
   pub fn get_if_confidence_le(&self, max_confidence: &C) -> Option<&T> {
     self
       .value

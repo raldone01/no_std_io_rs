@@ -3,14 +3,22 @@ use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
 
 use crate::no_std_io::extended_streams::tar::{
-  confident_value::ConfidentValue, InodeBuilder, InodeConfidentValue, SparseFileInstruction,
-  SparseFormat,
+  confident_value::ConfidentValue,
+  tar_constants::pax_keys_well_known::{
+    gnu::{
+      GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_MAJOR,
+      GNU_SPARSE_MAP_0_1, GNU_SPARSE_MAP_NUM_BLOCKS_0_01, GNU_SPARSE_MINOR, GNU_SPARSE_NAME_01_01,
+      GNU_SPARSE_REALSIZE_0_01, GNU_SPARSE_REALSIZE_1_0,
+    },
+    ATIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
+  },
+  InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat,
 };
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum PaxConfidence {
-  LOCAL = 1,
-  GLOBAL,
+  GLOBAL = 1,
+  LOCAL,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -51,6 +59,18 @@ impl<T> PaxConfidentValue<T> {
       None
     }
   }
+
+  pub fn insert_with_confidence(&mut self, confidence: PaxConfidence, value: T) -> Option<&T> {
+    match confidence {
+      PaxConfidence::GLOBAL => {
+        self.global = Some(value);
+      },
+      PaxConfidence::LOCAL => {
+        self.local = Some(value);
+      },
+    }
+    self.get()
+  }
 }
 
 struct StateParsingKey {
@@ -72,6 +92,12 @@ enum PaxParserState {
   ParsingValue(StateParsingValue),
 }
 
+#[derive(Default)]
+pub struct SparseFileInstructionBuilder {
+  offset_before: Option<u64>,
+  data_size: Option<u64>,
+}
+
 /// "%d %s=%s\n", <length>, <keyword>, <value>
 #[derive(Default)]
 pub struct PaxParser {
@@ -86,7 +112,7 @@ pub struct PaxParser {
   gnu_sprase_major: PaxConfidentValue<u32>,
   gnu_sparse_minor: PaxConfidentValue<u32>,
   gnu_sparse_realsize_0_01: PaxConfidentValue<usize>,
-  gnu_sparse_map: PaxConfidentValue<Vec<SparseFileInstruction>>,
+  gnu_sparse_map_local: Vec<SparseFileInstruction>,
   mtime: PaxConfidentValue<ConfidentValue<DateConfidence, u64>>,
   gid: PaxConfidentValue<u32>,
   gname: PaxConfidentValue<String>,
@@ -98,6 +124,7 @@ pub struct PaxParser {
 
   // state
   state: PaxParserState,
+  sparse_instruction_builder: SparseFileInstructionBuilder,
 }
 
 impl PaxParser {
@@ -151,9 +178,7 @@ impl PaxParser {
               .get_with_confidence()
               .or(self.gnu_sparse_realsize_0_01.get_with_confidence()),
           ));
-        // TODO: this clone can be avoided by moving out
-        inode_builder.sparse_file_instructions =
-          self.gnu_sparse_map.get().cloned().unwrap_or_default();
+        inode_builder.sparse_file_instructions = self.gnu_sparse_map_local.clone();
       }
     }
     inode_builder
@@ -201,7 +226,7 @@ impl PaxParser {
     self.gnu_sprase_major.reset_local();
     self.gnu_sparse_minor.reset_local();
     self.gnu_sparse_realsize_0_01.reset_local();
-    self.gnu_sparse_map.reset_local();
+    self.gnu_sparse_map_local.clear();
     self.mtime.reset_local();
     self.gid.reset_local();
     self.gname.reset_local();
@@ -213,9 +238,214 @@ impl PaxParser {
 
     // Reset the parser state to default
     self.state = PaxParserState::default();
+    self.sparse_instruction_builder = Default::default();
+  }
+
+  fn try_finish_sparse_instruction(&mut self) {
+    match (
+      self.sparse_instruction_builder.offset_before,
+      self.sparse_instruction_builder.data_size,
+    ) {
+      (Some(offset_before), Some(data_size)) => {
+        let sparse_instruction = SparseFileInstruction {
+          offset_before,
+          data_size,
+        };
+
+        self.gnu_sparse_map_local.push(sparse_instruction);
+
+        self.sparse_instruction_builder = Default::default();
+      },
+      _ => {},
+    }
+  }
+
+  /// The sparse map is a series of comma-separated decimal values
+  /// in the format `offset,size[,offset,size,...]` (0.1)
+  fn parse_gnu_sparse_map_0_1(&mut self, value: String) {
+    let parts = value.split(',');
+    let mut sparse_instruction_builder = SparseFileInstructionBuilder::default();
+    for (i, part) in parts.enumerate() {
+      if i % 2 == 0 {
+        // This is an offset
+        if let Ok(parsed_value) = part.parse::<u64>() {
+          sparse_instruction_builder.offset_before = Some(parsed_value);
+        } else {
+          // TODO: log warning about invalid offset
+          sparse_instruction_builder.offset_before = None;
+        }
+      } else {
+        // This is a size
+        if let Ok(parsed_value) = part.parse::<u64>() {
+          sparse_instruction_builder.data_size = Some(parsed_value);
+        } else {
+          // TODO: log warning about invalid size
+          sparse_instruction_builder.data_size = None;
+        }
+      }
+      match (
+        sparse_instruction_builder.offset_before,
+        sparse_instruction_builder.data_size,
+      ) {
+        (Some(_), Some(_)) => {
+          self.gnu_sparse_map_local.push(SparseFileInstruction {
+            offset_before: sparse_instruction_builder.offset_before.unwrap(),
+            data_size: sparse_instruction_builder.data_size.unwrap(),
+          });
+        },
+        _ => {},
+      }
+      self.sparse_instruction_builder = Default::default();
+    }
+  }
+
+  pub fn drain_local_unparsed_attributes(&mut self) -> HashMap<String, String> {
+    let mut local_unparsed_attributes =
+      core::mem::replace(&mut self.unparsed_attributes, HashMap::new());
+    // add the global unparsed attributes to the local ones
+    for (key, value) in self.global_attributes.iter() {
+      if !local_unparsed_attributes.contains_key(key) {
+        local_unparsed_attributes.insert(key.clone(), value.clone());
+      }
+    }
+    local_unparsed_attributes
   }
 
   fn ingest_attribute(&mut self, confidence: PaxConfidence, key: String, value: String) {
-    todo!()
+    match key.as_str() {
+      GNU_SPARSE_NAME_01_01 => {
+        if confidence == PaxConfidence::LOCAL {
+          self
+            .gnu_sparse_name_01_01
+            .insert_with_confidence(confidence, RelativePathBuf::from(value));
+        } else {
+          // TODO: log warning
+        }
+      },
+      GNU_SPARSE_REALSIZE_1_0 => {
+        if confidence == PaxConfidence::LOCAL {
+          if let Ok(parsed_value) = value.parse::<usize>() {
+            self
+              .gnu_sparse_realsize_1_0
+              .insert_with_confidence(confidence, parsed_value);
+          }
+        } else {
+          // TODO: log warning
+        }
+      },
+      GNU_SPARSE_MAJOR => {
+        if let Ok(parsed_value) = value.parse::<u32>() {
+          self
+            .gnu_sprase_major
+            .insert_with_confidence(confidence, parsed_value);
+        }
+      },
+      GNU_SPARSE_MINOR => {
+        if let Ok(parsed_value) = value.parse::<u32>() {
+          self
+            .gnu_sparse_minor
+            .insert_with_confidence(confidence, parsed_value);
+        }
+      },
+      GNU_SPARSE_REALSIZE_0_01 => {
+        if confidence == PaxConfidence::LOCAL {
+          if let Ok(parsed_value) = value.parse::<usize>() {
+            self
+              .gnu_sparse_realsize_0_01
+              .insert_with_confidence(confidence, parsed_value);
+          }
+        } else {
+          // TODO: log warning
+        }
+      },
+      GNU_SPARSE_MAP_NUM_BLOCKS_0_01 => {
+        // This is a user controlled value so we don't reserve capacity
+      },
+      GNU_SPARSE_DATA_BLOCK_OFFSET_0_0 => {
+        if confidence == PaxConfidence::LOCAL {
+          if let Ok(parsed_value) = value.parse::<u64>() {
+            self.sparse_instruction_builder.offset_before = Some(parsed_value);
+          }
+          self.try_finish_sparse_instruction();
+        } else {
+          // TODO: log warning
+        }
+      },
+      GNU_SPARSE_DATA_BLOCK_SIZE_0_0 => {
+        if confidence == PaxConfidence::LOCAL {
+          if let Ok(parsed_value) = value.parse::<u64>() {
+            self.sparse_instruction_builder.data_size = Some(parsed_value);
+          }
+          self.try_finish_sparse_instruction();
+        } else {
+          // TODO: log warning
+        }
+      },
+      GNU_SPARSE_MAP_0_1 => {
+        if confidence == PaxConfidence::LOCAL {
+          self.parse_gnu_sparse_map_0_1(value);
+        } else {
+          // TODO: log warning
+        }
+      },
+      ATIME => {
+        if let Ok(parsed_value) = value.parse::<u64>() {
+          self.mtime.insert_with_confidence(
+            PaxConfidence::LOCAL,
+            ConfidentValue::new(DateConfidence::ATIME, parsed_value),
+          );
+        }
+      },
+      GID => {
+        if let Ok(parsed_value) = value.parse::<u32>() {
+          self.gid.insert_with_confidence(confidence, parsed_value);
+        }
+      },
+      GNAME => {
+        self.gname.insert_with_confidence(confidence, value);
+      },
+      LINKPATH => {
+        self.link_path.insert_with_confidence(confidence, value);
+      },
+      MTIME => {
+        if let Ok(parsed_value) = value.parse::<u64>() {
+          self.mtime.insert_with_confidence(
+            PaxConfidence::LOCAL,
+            ConfidentValue::new(DateConfidence::MTIME, parsed_value),
+          );
+        }
+      },
+      PATH => {
+        self
+          .path
+          .insert_with_confidence(confidence, RelativePathBuf::from(value));
+      },
+      SIZE => {
+        if let Ok(parsed_value) = value.parse::<usize>() {
+          self
+            .data_size
+            .insert_with_confidence(confidence, parsed_value);
+        }
+      },
+      UID => {
+        if let Ok(parsed_value) = value.parse::<u32>() {
+          self.uid.insert_with_confidence(confidence, parsed_value);
+        }
+      },
+      UNAME => {
+        self.uname.insert_with_confidence(confidence, value);
+      },
+      _ => {
+        // Unparsed attribute store it
+        match confidence {
+          PaxConfidence::GLOBAL => {
+            self.global_attributes.insert(key, value);
+          },
+          PaxConfidence::LOCAL => {
+            self.unparsed_attributes.insert(key, value);
+          },
+        }
+      },
+    }
   }
 }
