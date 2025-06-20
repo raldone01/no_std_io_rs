@@ -89,9 +89,12 @@ impl<T> PaxConfidentValue<T> {
   }
 }
 
+/// Maximum length of the length field in bytes
+const MAX_KV_LENGTH_FIELD_LENGTH: usize = 32;
+
 #[derive(Debug, PartialEq, Eq)]
 struct StateParsingNewKV {
-  kv_cursor: Cursor<[u8; 20]>,
+  kv_cursor: Cursor<[u8; MAX_KV_LENGTH_FIELD_LENGTH]>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -118,7 +121,7 @@ enum PaxParserState {
 impl Default for PaxParserState {
   fn default() -> Self {
     PaxParserState::ParsingNewKV(StateParsingNewKV {
-      kv_cursor: Cursor::new([0; 20]),
+      kv_cursor: Cursor::new([0; MAX_KV_LENGTH_FIELD_LENGTH]),
     })
   }
 }

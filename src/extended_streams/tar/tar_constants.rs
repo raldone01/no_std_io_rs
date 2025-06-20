@@ -88,6 +88,7 @@ impl TarTypeFlag {
         | TarTypeFlag::Directory
         | TarTypeFlag::Fifo
         | TarTypeFlag::ContinuousFile
+        | TarTypeFlag::SparseOldGnu
     )
   }
 

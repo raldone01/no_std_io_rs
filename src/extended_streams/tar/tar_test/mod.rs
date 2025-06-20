@@ -1,13 +1,9 @@
-use alloc::{
-  string::{String, ToString},
-  vec::Vec,
-};
-
-use hashbrown::HashMap;
+use alloc::{string::ToString, vec::Vec};
 
 use crate::{
   extended_streams::tar::{
-    FileData, FileEntry, RegularFileEntry, TarInode, TarParser, TarParserOptions,
+    expand_sparse_files, FileData, FileEntry, RegularFileEntry, TarInode, TarParser,
+    TarParserOptions,
   },
   WriteAll,
 };
@@ -15,6 +11,19 @@ use crate::{
 struct SimpleFile {
   file_path: &'static str,
   data: &'static [u8],
+}
+
+fn first_diff_index(a: &[u8], b: &[u8]) -> Option<usize> {
+  a.iter()
+    .zip(b.iter())
+    .position(|(x, y)| x != y)
+    .or_else(|| {
+      if a.len() != b.len() {
+        Some(a.len().min(b.len()))
+      } else {
+        None
+      }
+    })
 }
 
 impl SimpleFile {
@@ -31,11 +40,20 @@ impl SimpleFile {
         data: FileData::Regular(data),
         ..
       }) => {
-        assert_eq!(
-          data, self.data,
-          "Data for file {} does not match expected data",
-          self.file_path
-        );
+        // find index of byte that is different
+        let diff_index = first_diff_index(data, self.data);
+        if let Some(index) = diff_index {
+          // Show the index and the first 40 different bytes
+          let bytes_to_show = 40;
+          let bytes_expected = &self.data[index..(index + bytes_to_show).min(self.data.len())];
+          let bytes_found = &data[index..(index + bytes_to_show).min(data.len())];
+          panic!(
+            "Data for file {} does not match at index {}: expected len {}, found len {}, expected data {:?}, found data {:?}",
+            self.file_path, index,
+            self.data.len(), data.len(),
+            bytes_expected, bytes_found
+          );
+        }
       },
       _ => panic!("Expected RegularFileEntry for file {}", self.file_path),
     }
@@ -55,6 +73,7 @@ const SIMPLE_FILES: &[SimpleFile] = &[
   create_simple_file!("test-archive/subfolder/my_file.txt"),
   create_simple_file!("test-archive/lorem.txt"),
   create_simple_file!("test-archive/test_file.txt"),
+  create_simple_file!("test-archive/sparse_test_file.txt"),
 ];
 
 const TAR_ARCHIVES: &[SimpleFile] = &[
@@ -62,7 +81,7 @@ const TAR_ARCHIVES: &[SimpleFile] = &[
   create_simple_file!("test-ustar.tar"),
   create_simple_file!("test-pax.tar"),
   create_simple_file!("test-gnu-nosparse.tar"),
-  //create_simple_file!("test-gnu-sparse-0.0.tar"),
+  create_simple_file!("test-gnu-sparse-0.0.tar"),
   //create_simple_file!("test-gnu-sparse-0.1.tar"),
   //create_simple_file!("test-gnu-sparse-1.0.tar"),
 ];
@@ -85,7 +104,8 @@ fn assert_parse_archive(archive: &SimpleFile) {
     archive.file_path,
     parser_result.unwrap_err()
   );
-  let files = tar_parser.get_extracted_files();
+  let mut files = tar_parser.get_extracted_files().to_vec();
+  expand_sparse_files(&mut files);
   assert_test_archive_simple_files(&files);
 }
 

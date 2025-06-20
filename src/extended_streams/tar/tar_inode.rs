@@ -9,6 +9,7 @@ pub struct TimeStamp {
   pub nanoseconds: u32,
 }
 
+#[derive(Clone, Debug)]
 pub struct TarInode {
   pub path: RelativePathBuf,
   pub entry: FileEntry,
@@ -105,7 +106,7 @@ impl FilePermissions {
   }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum FileEntry {
   RegularFile(RegularFileEntry),
   HardLink(HardLinkEntry),
@@ -122,7 +123,7 @@ pub struct SparseFileInstruction {
   pub data_size: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum FileData {
   Regular(Vec<u8>),
   Sparse {
@@ -131,29 +132,62 @@ pub enum FileData {
   },
 }
 
-#[derive(Debug)]
+impl FileData {
+  pub fn expand_sparse(&mut self) {
+    if let FileData::Sparse { instructions, data } = self {
+      let mut expanded_data = Vec::new();
+      let mut processed_data = 0;
+
+      for instruction in instructions {
+        // Append offset_before bytes as zeroes
+        expanded_data.resize(instruction.offset_before as usize, 0);
+        // Append the actual data
+        expanded_data.extend_from_slice(
+          &data[processed_data..processed_data + instruction.data_size as usize],
+        );
+        processed_data += instruction.data_size as usize;
+      }
+
+      *self = FileData::Regular(expanded_data);
+    }
+  }
+}
+
+pub fn expand_sparse_files(files: &mut [TarInode]) {
+  for file in files.iter_mut() {
+    if let FileEntry::RegularFile(RegularFileEntry {
+      data: ref mut file_data,
+      ..
+    }) = file.entry
+    {
+      file_data.expand_sparse();
+    }
+  }
+}
+
+#[derive(Clone, Debug)]
 pub struct RegularFileEntry {
   pub continuous: bool,
   pub data: FileData,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct HardLinkEntry {
   pub link_target: RelativePathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SymbolicLinkEntry {
   pub link_target: RelativePathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CharacterDeviceEntry {
   pub major: u32,
   pub minor: u32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BlockDeviceEntry {
   pub major: u32,
   pub minor: u32,

@@ -639,13 +639,13 @@ impl TarParser {
       V7Header::MAGIC_VERSION_GNU => {
         parse_v7_header()?;
 
-        if typeflag.is_file_like() {
-          let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
-            .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
-          parse_common_header_additions(common_header_additions)?;
-          let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
-            .expect("BUG: Not enough bytes for GnuHeaderAdditions");
+        let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
+          .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
+        parse_common_header_additions(common_header_additions)?;
+        let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
+          .expect("BUG: Not enough bytes for GnuHeaderAdditions");
 
+        if typeflag.is_file_like() {
           // We don't care about atime or ctime so we just use them if we could not parse mtime.
           let _ = self
             .inode_state
@@ -655,21 +655,21 @@ impl TarParser {
                 .parse_atime()
                 .or_else(|_| gnu_additions.parse_ctime())
             });
-
-          // Handle sparse entries (Old GNU Format)
-          if typeflag == TarTypeFlag::SparseOldGnu {
-            self.inode_state.sparse_format = Some(SparseFormat::GnuOld);
-            Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &gnu_additions.sparse);
-            old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
-          }
-
-          let _ = self
-            .inode_state
-            .sparse_real_size
-            .try_get_or_set_with(TarConfidence::Gnu, || {
-              gnu_additions.parse_real_size().map(|s| s as usize)
-            });
         }
+
+        // Handle sparse entries (Old GNU Format)
+        if typeflag == TarTypeFlag::SparseOldGnu {
+          self.inode_state.sparse_format = Some(SparseFormat::GnuOld);
+          Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &gnu_additions.sparse);
+          old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
+        }
+
+        let _ = self
+          .inode_state
+          .sparse_real_size
+          .try_get_or_set_with(TarConfidence::Gnu, || {
+            gnu_additions.parse_real_size().map(|s| s as usize)
+          });
 
         // Done GNU header parsing.
       },
@@ -793,7 +793,10 @@ impl TarParser {
             },
           )
         } else {
-          TarParserState::default()
+          TarParserState::ReadingFileData(StateReadingFileData {
+            remaining_data: data_after_header,
+            padding_after: padding_after_data,
+          })
         }
       },
       TarTypeFlag::UnknownTypeFlag(_) => {

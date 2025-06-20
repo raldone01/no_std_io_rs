@@ -63,14 +63,11 @@ sparse_output_file="test-archive/sparse_test_file.txt"
 # Create a 2 MB sparse file
 truncate -s 2M "$sparse_output_file"
 
-# Add "Test" at offset 0
-printf 'Test\n' | dd of="$sparse_output_file" bs=1 seek=0 conv=notrunc
-
-# Add "Test" at 1 KB offset
-printf 'Test\n' | dd of="$sparse_output_file" bs=1 seek=$((1 * 1024)) conv=notrunc
-
-# Add "Test" at 1 MB offset
-printf 'Test\n' | dd of="$sparse_output_file" bs=1 seek=$((1 * 1024 * 1024)) conv=notrunc
+# Write "Test\n"
+for ((j = 0; j < 128; j++)); do
+  offset=$((j * 16 * 1024))
+  printf 'Test\n' | dd of="$sparse_output_file" bs=1 seek=$((offset)) conv=notrunc status=none
+done
 
 # Create tar archives using different formats
 
