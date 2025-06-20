@@ -99,6 +99,7 @@ impl GnuSparse1_0Parser {
     cursor: &mut Cursor<&[u8]>,
     mut state: StateParsingMapEntry,
     sparse_file_instructions: &mut Vec<SparseFileInstruction>,
+    initial_cursor_position: usize,
   ) -> Result<ParserState, TarParserError> {
     // Read the offset or size until we hit a newline
     let copy_buffered_until_result = cursor.copy_buffered_until(
@@ -142,9 +143,10 @@ impl GnuSparse1_0Parser {
 
     if state.remaining_maps == 0 {
       // All maps have been parsed. We still need to skip padding.
-      let remaining_padding = (cursor.position() as usize + 511) & !511;
+      let bytes_read = self.bytes_read + cursor.position() - initial_cursor_position;
+      let remaining_padding = ((bytes_read + 511) & !511) - bytes_read;
       return Ok(ParserState::SkippingPadding(StateSkippingPadding {
-        remaining_padding: remaining_padding - cursor.position() as usize,
+        remaining_padding,
       }));
     }
 
@@ -186,14 +188,18 @@ impl GnuSparse1_0Parser {
 
     let next_state = match parser_state {
       ParserState::ParsingNumberOfMaps(state) => self.state_parsing_number_of_maps(cursor, state),
-      ParserState::ParsingMapEntry(state) => {
-        self.state_parsing_map_entry(cursor, state, sparse_file_instructions)
-      },
+      ParserState::ParsingMapEntry(state) => self.state_parsing_map_entry(
+        cursor,
+        state,
+        sparse_file_instructions,
+        initial_cursor_position,
+      ),
       ParserState::SkippingPadding(state) => self.state_skipping_padding(cursor, state),
       ParserState::Finished => panic!("BUG: No next state set in GnuSparse1_0Parser"),
     };
 
-    self.bytes_read += cursor.position() - initial_cursor_position;
+    let bytes_read_this_parse = cursor.position() - initial_cursor_position;
+    self.bytes_read += bytes_read_this_parse;
 
     self.state = next_state?;
 
@@ -217,8 +223,8 @@ mod tests {
     input: &[u8],
   ) -> Result<Vec<SparseFileInstruction>, TarParserError> {
     // Pad the input to a multiple of 512 bytes
-    let padding_length = (512 - (input.len() % 512)) % 512;
-    let mut input_padded = vec![0; input.len() + padding_length];
+    let padding_length = (input.len() + 511) & !511;
+    let mut input_padded = vec![0; padding_length];
     input_padded[..input.len()].copy_from_slice(input);
     let mut cursor = Cursor::new(input_padded.as_slice());
     let mut sparse_file_instructions = Vec::new();

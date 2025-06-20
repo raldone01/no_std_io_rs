@@ -179,7 +179,8 @@ impl PaxParser {
     &self.global_attributes
   }
 
-  fn get_sparse_format(&self) -> Option<SparseFormat> {
+  #[must_use]
+  pub fn get_sparse_format(&self) -> Option<SparseFormat> {
     SparseFormat::try_from_gnu_version(
       self.gnu_sprase_major.get().map(|v| *v),
       self.gnu_sparse_minor.get().map(|v| *v),
@@ -216,9 +217,7 @@ impl PaxParser {
 
   pub fn load_pax_attributes_into_inode_builder(&self, inode_builder: &mut InodeBuilder) {
     if let Some(sparse_format) = self.get_sparse_format() {
-      if inode_builder.sparse_format.is_some() {
-        // TODO: log error that we found conflicting sparse formats
-      } else {
+      if inode_builder.sparse_format.is_none() {
         inode_builder.sparse_format = Some(sparse_format);
         inode_builder
           .file_path
@@ -233,7 +232,9 @@ impl PaxParser {
               .get_with_confidence()
               .or(self.gnu_sparse_realsize_0_01.get_with_confidence()),
           ));
-        inode_builder.sparse_file_instructions = self.gnu_sparse_map_local.clone();
+        if sparse_format == SparseFormat::Gnu0_0 || sparse_format == SparseFormat::Gnu0_1 {
+          inode_builder.sparse_file_instructions = self.gnu_sparse_map_local.clone();
+        }
       }
     }
     inode_builder
@@ -411,6 +412,12 @@ impl PaxParser {
       },
       GNU_SPARSE_DATA_BLOCK_OFFSET_0_0 => {
         if confidence == PaxConfidence::LOCAL {
+          self
+            .gnu_sprase_major
+            .insert_with_confidence(PaxConfidence::LOCAL, 0);
+          self
+            .gnu_sparse_minor
+            .insert_with_confidence(PaxConfidence::LOCAL, 0);
           if let Ok(parsed_value) = value.parse::<u64>() {
             self.sparse_instruction_builder.offset_before = Some(parsed_value);
           }
@@ -421,6 +428,12 @@ impl PaxParser {
       },
       GNU_SPARSE_DATA_BLOCK_SIZE_0_0 => {
         if confidence == PaxConfidence::LOCAL {
+          self
+            .gnu_sprase_major
+            .insert_with_confidence(PaxConfidence::LOCAL, 0);
+          self
+            .gnu_sparse_minor
+            .insert_with_confidence(PaxConfidence::LOCAL, 0);
           if let Ok(parsed_value) = value.parse::<u64>() {
             self.sparse_instruction_builder.data_size = Some(parsed_value);
           }
@@ -431,6 +444,12 @@ impl PaxParser {
       },
       GNU_SPARSE_MAP_0_1 => {
         if confidence == PaxConfidence::LOCAL {
+          self
+            .gnu_sprase_major
+            .insert_with_confidence(PaxConfidence::LOCAL, 0);
+          self
+            .gnu_sparse_minor
+            .insert_with_confidence(PaxConfidence::LOCAL, 1);
           self.parse_gnu_sparse_map_0_1(value);
         } else {
           // TODO: log warning

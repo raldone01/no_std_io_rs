@@ -38,7 +38,6 @@ Features of this crate:
 * Add doc comments with examples to all public functions and structs.
 * Add audit log to tar parser to track spec violations
 * Write a tar fuzzer
-* Configure limits for all growable buffers in the tar parser.
 
 # TODO no_std_io:
 
@@ -56,6 +55,8 @@ Features of this crate:
 * gen tar
 * gnu `sparse` files
 * Cleanup the pax parser and how it uses the cursor. to do that add write_until and read_until
+* https://www.gnu.org/software/tar/manual/html_section/Dumpdir.html#Dumpdir
+* Configure limits for all growable buffers in the tar parser.
 
 # TODO (long term):
 * Add filesystem trait and filesystem agnostic file api. (Default ship a memory based implementation serialize to tar_gz and extract from tar_gz.)

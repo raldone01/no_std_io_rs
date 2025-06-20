@@ -115,7 +115,7 @@ impl<T> GetOrInsertWithOption<T> for Option<T> {
   }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub(crate) enum SparseFormat {
   GnuOld,
   Gnu0_0,
@@ -456,7 +456,7 @@ impl TarParser {
     data_after_header: usize,
     padding_after_data: usize,
   ) -> TarParserState {
-    if self.inode_state.sparse_format == Some(SparseFormat::Gnu1_0) {
+    if self.pax_parser.get_sparse_format() == Some(SparseFormat::Gnu1_0) {
       TarParserState::ParsingGnuSparse1_0(StateParsingGnuSparse1_0 {
         data_after_header,
         padding_after: padding_after_data,
@@ -964,8 +964,9 @@ impl TarParser {
     }
 
     // We are done reading the sparse data
+    let remaining_data = state.data_after_header - state.sparse_parser.bytes_read;
     Ok(TarParserState::ReadingFileData(StateReadingFileData {
-      remaining_data: state.data_after_header - state.sparse_parser.bytes_read,
+      remaining_data: remaining_data,
       padding_after: state.padding_after,
     }))
   }
