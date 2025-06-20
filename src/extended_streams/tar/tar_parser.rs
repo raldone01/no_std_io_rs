@@ -19,7 +19,7 @@ use crate::{
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
       GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
-      UstarHeaderAdditions, V7Header, BLOCK_SIZE,
+      UstarHeaderAdditions, V7Header, BLOCK_SIZE, TAR_ZERO_HEADER,
     },
     BlockDeviceEntry, CharacterDeviceEntry, FileData, FileEntry, FilePermissions, HardLinkEntry,
     RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry, TarInode,
@@ -71,17 +71,6 @@ impl From<PaxConfidence> for TarConfidence {
       PaxConfidence::LOCAL => TarConfidence::PaxLocal,
       PaxConfidence::GLOBAL => TarConfidence::PaxGlobal,
     }
-  }
-}
-
-impl TryFrom<&GnuSparseInstruction> for SparseFileInstruction {
-  type Error = ParseOctalError;
-
-  fn try_from(value: &GnuSparseInstruction) -> Result<Self, Self::Error> {
-    Ok(Self {
-      offset_before: value.parse_offset()?,
-      data_size: value.parse_num_bytes()?,
-    })
   }
 }
 
@@ -273,7 +262,7 @@ pub(crate) fn buffer_array<'a, const BUFFER_SIZE: usize>(
     // We can directly pass through the buffer so we don't have to copy it to the intermediate buffer.
     return Ok(Some(
       reader
-        .peek_exact(BUFFER_SIZE)
+        .read_exact(BUFFER_SIZE)
         .expect("BUG: buffer_array direct patch through failed"),
     ));
   }
@@ -397,7 +386,7 @@ impl TarParser {
       if sparse_header.is_empty() {
         continue;
       }
-      if let Ok(instruction) = SparseFileInstruction::try_from(sparse_header) {
+      if let Ok(instruction) = sparse_header.convert_to_sparse_instruction() {
         inode_state.sparse_file_instructions.push(instruction);
       } else {
         // If we can't parse the sparse header, we just ignore it.
@@ -410,12 +399,56 @@ impl TarParser {
     self
       .pax_parser
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
-    let tar_inode = self.recover_internal();
-    let file_entry = file_entry(self, tar_inode);
+    let inode_builder = self.recover_internal();
 
-    //let inode = TarInode {
+    // These clones can definitely be optimized.
+    // Splitting the Inode builder into two parts would be a good start.
+    let tar_inode = TarInode {
+      path: inode_builder
+        .file_path
+        .get()
+        .cloned()
+        .unwrap_or_else(|| RelativePathBuf::from("")),
+      entry: FileEntry::Fifo,
+      mode: inode_builder
+        .mode
+        .clone()
+        .unwrap_or_else(|| FilePermissions::default()),
+      uid: inode_builder.uid.get().cloned().unwrap_or(0),
+      gid: inode_builder.gid.get().cloned().unwrap_or(0),
+      mtime: inode_builder.mtime.get().cloned().unwrap_or(0),
+      uname: inode_builder.uname.get().cloned().unwrap_or_default(),
+      gname: inode_builder.gname.get().cloned().unwrap_or_default(),
+      unparsed_extended_attributes: self.pax_parser.drain_local_unparsed_attributes(),
+    };
 
-    todo!()
+    let file_entry = file_entry(self, inode_builder);
+
+    // If we are keeping only the last version of each file, we check if we have seen this file before.
+    if self.keep_only_last {
+      if let Some(index) = self.seen_files.get(&tar_inode.path) {
+        // We have seen this file before, so we replace the old entry.
+        self.extracted_files[*index] = TarInode {
+          entry: file_entry,
+          ..tar_inode
+        };
+      } else {
+        // We haven't seen this file before, so we add it to the list.
+        self
+          .seen_files
+          .insert(tar_inode.path.clone(), self.extracted_files.len());
+        self.extracted_files.push(TarInode {
+          entry: file_entry,
+          ..tar_inode
+        });
+      }
+    } else {
+      // We just add the new file to the list.
+      self.extracted_files.push(TarInode {
+        entry: file_entry,
+        ..tar_inode
+      });
+    }
   }
 
   fn compute_file_parsing_state(
@@ -468,6 +501,12 @@ impl TarParser {
         return Ok(TarParserState::ReadingTarHeader(state));
       },
     };
+
+    if header_buffer == TAR_ZERO_HEADER {
+      // We have reached the end of the tar archive.
+      // However we remain ready to read the next header.
+      return Ok(TarParserState::default());
+    }
 
     let old_header =
       V7Header::ref_from_bytes(&header_buffer).expect("BUG: Not enough bytes for OldHeader");

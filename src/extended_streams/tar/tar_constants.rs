@@ -3,7 +3,7 @@ use core::str::Utf8Error;
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::extended_streams::tar::FilePermissions;
+use crate::extended_streams::tar::{FilePermissions, SparseFileInstruction};
 
 // --- Constants for the TAR Header Format ---
 pub const BLOCK_SIZE: usize = 512;
@@ -313,7 +313,7 @@ impl UstarHeaderAdditions {
 /// Fields contained in the padding of the [`CommonHeaderAdditions`].
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-pub struct GnuHeaderAdditions {
+pub(crate) struct GnuHeaderAdditions {
   /// Access time in octal ASCII, null-terminated (12 bytes)
   pub atime: [u8; 12],
   /// Creation time in octal ASCII, null-terminated (12 bytes)
@@ -390,11 +390,20 @@ impl GnuSparseInstruction {
   pub fn is_empty(&self) -> bool {
     self == &Self::ZERO_INSTRUCTION
   }
+
+  pub fn convert_to_sparse_instruction(&self) -> Result<SparseFileInstruction, ParseOctalError> {
+    let offset_before = self.parse_offset()?;
+    let data_size = self.parse_num_bytes()?;
+    Ok(SparseFileInstruction {
+      offset_before,
+      data_size,
+    })
+  }
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-pub struct GnuHeaderExtSparse {
+pub(crate) struct GnuHeaderExtSparse {
   pub sparse: [GnuSparseInstruction; 21],
   pub is_extended: [u8; 1],
   pub padding: [u8; 7],

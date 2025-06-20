@@ -16,6 +16,7 @@ pub struct TarInode {
 }
 
 /// Represents permissions for a single user class (owner, group, or other)
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Permission {
   pub read: bool,
   pub write: bool,
@@ -23,6 +24,7 @@ pub struct Permission {
 }
 
 /// Represents file permissions split into owner, group, and other
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FilePermissions {
   pub owner: Permission,
   pub group: Permission,
@@ -30,6 +32,31 @@ pub struct FilePermissions {
   pub set_uid: bool,
   pub set_gid: bool,
   pub sticky: bool,
+}
+
+impl Default for FilePermissions {
+  fn default() -> Self {
+    FilePermissions {
+      owner: Permission {
+        read: true,
+        write: true,
+        execute: false,
+      },
+      group: Permission {
+        read: true,
+        write: true,
+        execute: false,
+      },
+      other: Permission {
+        read: false,
+        write: false,
+        execute: false,
+      },
+      set_uid: false,
+      set_gid: false,
+      sticky: false,
+    }
+  }
 }
 
 impl FilePermissions {
@@ -72,6 +99,7 @@ impl FilePermissions {
   }
 }
 
+#[derive(Debug)]
 pub enum FileEntry {
   RegularFile(RegularFileEntry),
   HardLink(HardLinkEntry),
@@ -88,6 +116,7 @@ pub struct SparseFileInstruction {
   pub data_size: u64,
 }
 
+#[derive(Debug)]
 pub enum FileData {
   Regular(Vec<u8>),
   Sparse {
@@ -96,24 +125,29 @@ pub enum FileData {
   },
 }
 
+#[derive(Debug)]
 pub struct RegularFileEntry {
   pub continuous: bool,
   pub data: FileData,
 }
 
+#[derive(Debug)]
 pub struct HardLinkEntry {
   pub link_target: RelativePathBuf,
 }
 
+#[derive(Debug)]
 pub struct SymbolicLinkEntry {
   pub link_target: RelativePathBuf,
 }
 
+#[derive(Debug)]
 pub struct CharacterDeviceEntry {
   pub major: u32,
   pub minor: u32,
 }
 
+#[derive(Debug)]
 pub struct BlockDeviceEntry {
   pub major: u32,
   pub minor: u32,

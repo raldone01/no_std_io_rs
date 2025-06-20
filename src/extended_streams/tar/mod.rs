@@ -7,9 +7,9 @@ pub use tar_parser::*;
 // pub use writer_tar::*;
 pub use tar_inode::*;
 
-//#[cfg(test)]
-//mod tar_test;
+#[cfg(test)]
+mod tar_test;
 
-mod confident_value;
-mod gnu_sparse_1_0_parser;
-mod pax_parser;
+pub(crate) mod confident_value;
+pub(crate) mod gnu_sparse_1_0_parser;
+pub(crate) mod pax_parser;
