@@ -1,12 +1,11 @@
 use core::panic;
 
 use alloc::{collections::TryReserveError, string::String, vec::Vec};
+
 use hashbrown::HashMap;
-use relative_path::RelativePathBuf;
 
 use crate::{
   extended_streams::tar::{
-    confident_value::ConfidentValue,
     tar_constants::pax_keys_well_known::{
       gnu::{
         GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_MAJOR,
@@ -26,13 +25,6 @@ pub(crate) enum PaxConfidence {
   GLOBAL = 1,
   #[default]
   LOCAL,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-enum DateConfidence {
-  CTIME = 1,
-  ATIME,
-  MTIME,
 }
 
 #[derive(Default)]
@@ -141,17 +133,19 @@ pub struct PaxParser {
   unparsed_attributes: HashMap<String, String>,
 
   // parsed attributes
-  gnu_sparse_name_01_01: PaxConfidentValue<RelativePathBuf>,
+  gnu_sparse_name_01_01: PaxConfidentValue<String>,
   gnu_sparse_realsize_1_0: PaxConfidentValue<usize>,
   gnu_sprase_major: PaxConfidentValue<u32>,
   gnu_sparse_minor: PaxConfidentValue<u32>,
   gnu_sparse_realsize_0_01: PaxConfidentValue<usize>,
   gnu_sparse_map_local: Vec<SparseFileInstruction>,
-  mtime: PaxConfidentValue<ConfidentValue<DateConfidence, TimeStamp>>,
+  mtime: PaxConfidentValue<TimeStamp>,
+  atime: PaxConfidentValue<TimeStamp>,
+  ctime: PaxConfidentValue<TimeStamp>,
   gid: PaxConfidentValue<u32>,
   gname: PaxConfidentValue<String>,
   link_path: PaxConfidentValue<String>,
-  path: PaxConfidentValue<RelativePathBuf>,
+  path: PaxConfidentValue<String>,
   data_size: PaxConfidentValue<usize>,
   uid: PaxConfidentValue<u32>,
   uname: PaxConfidentValue<String>,
@@ -244,10 +238,19 @@ impl PaxParser {
       self
         .mtime
         .get_with_confidence()
-        .and_then(|(confidence, value)| match value.get() {
-          Some(value) => Some((confidence, value)),
-          None => None,
-        }),
+        .or(self.mtime.get_with_confidence()),
+    ));
+    inode_builder.atime.update_with(Self::to_confident_value(
+      self
+        .mtime
+        .get_with_confidence()
+        .or(self.atime.get_with_confidence()),
+    ));
+    inode_builder.ctime.update_with(Self::to_confident_value(
+      self
+        .mtime
+        .get_with_confidence()
+        .or(self.ctime.get_with_confidence()),
     ));
     inode_builder
       .gid
@@ -366,7 +369,7 @@ impl PaxParser {
         if confidence == PaxConfidence::LOCAL {
           self
             .gnu_sparse_name_01_01
-            .insert_with_confidence(confidence, RelativePathBuf::from(value));
+            .insert_with_confidence(confidence, value);
         } else {
           // TODO: log warning
         }
@@ -457,18 +460,7 @@ impl PaxParser {
       },
       ATIME => {
         if let Some(parsed_value) = Self::parse_time(value.as_str()) {
-          match self.mtime.get_mut() {
-            Some(existing_value) => {
-              let confident_value = ConfidentValue::new(DateConfidence::ATIME, &parsed_value);
-              existing_value.update_with(confident_value);
-            },
-            None => {
-              let confident_value = ConfidentValue::new(DateConfidence::ATIME, parsed_value);
-              self
-                .mtime
-                .insert_with_confidence(PaxConfidence::LOCAL, confident_value);
-            },
-          }
+          self.atime.insert_with_confidence(confidence, parsed_value);
         }
       },
       GID => {
@@ -484,40 +476,16 @@ impl PaxParser {
       },
       MTIME => {
         if let Some(parsed_value) = Self::parse_time(value.as_str()) {
-          match self.mtime.get_mut() {
-            Some(existing_value) => {
-              let confident_value = ConfidentValue::new(DateConfidence::MTIME, &parsed_value);
-              existing_value.update_with(confident_value);
-            },
-            None => {
-              let confident_value = ConfidentValue::new(DateConfidence::MTIME, parsed_value);
-              self
-                .mtime
-                .insert_with_confidence(PaxConfidence::LOCAL, confident_value);
-            },
-          }
+          self.mtime.insert_with_confidence(confidence, parsed_value);
         }
       },
       CTIME => {
         if let Some(parsed_value) = Self::parse_time(value.as_str()) {
-          match self.mtime.get_mut() {
-            Some(existing_value) => {
-              let confident_value = ConfidentValue::new(DateConfidence::CTIME, &parsed_value);
-              existing_value.update_with(confident_value);
-            },
-            None => {
-              let confident_value = ConfidentValue::new(DateConfidence::CTIME, parsed_value);
-              self
-                .mtime
-                .insert_with_confidence(PaxConfidence::LOCAL, confident_value);
-            },
-          }
+          self.ctime.insert_with_confidence(confidence, parsed_value);
         }
       },
       PATH => {
-        self
-          .path
-          .insert_with_confidence(confidence, RelativePathBuf::from(value));
+        self.path.insert_with_confidence(confidence, value);
       },
       SIZE => {
         if let Ok(parsed_value) = value.parse::<usize>() {
@@ -759,7 +727,7 @@ mod tests {
     let data = b"18 path=some/file\n";
     parser.write_all(data, false).unwrap();
 
-    assert_eq!(parser.path.get(), Some(&RelativePathBuf::from("some/file")));
+    assert_eq!(parser.path.get(), Some(&"some/file".to_string()));
     assert_eq!(parser.state, PaxParserState::default());
   }
 
@@ -769,7 +737,7 @@ mod tests {
     let data = b"18 path=some/file\n12 size=123\n12 uid=1000\n";
     parser.write_all(data, false).unwrap();
 
-    assert_eq!(parser.path.get(), Some(&RelativePathBuf::from("some/file")));
+    assert_eq!(parser.path.get(), Some(&"some/file".to_string()));
     assert_eq!(parser.state, PaxParserState::default());
   }
 
@@ -788,13 +756,24 @@ mod tests {
     );
     assert_eq!(
       parser.mtime.get(),
-      Some(&ConfidentValue::new(
-        DateConfidence::MTIME,
-        TimeStamp {
-          seconds_since_epoch: 1749954382,
-          nanoseconds: 774290089,
-        }
-      ))
+      Some(&TimeStamp {
+        seconds_since_epoch: 1749954382,
+        nanoseconds: 774290089,
+      })
+    );
+    assert_eq!(
+      parser.atime.get(),
+      Some(&TimeStamp {
+        seconds_since_epoch: 1749803808,
+        nanoseconds: 0,
+      })
+    );
+    assert_eq!(
+      parser.ctime.get(),
+      Some(&TimeStamp {
+        seconds_since_epoch: 1749954382,
+        nanoseconds: 774290089,
+      })
     );
     assert_eq!(parser.state, PaxParserState::default());
   }

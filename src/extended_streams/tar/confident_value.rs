@@ -48,15 +48,16 @@ impl<C: Ord, T> ConfidentValue<C, T> {
     self.value.as_ref().map(|(c, v)| (c, v))
   }
 
-  /// Returns a reference to the value only if its confidence is less than or
+  /// Extracts the value only if its confidence is less than or
   /// equal to the provided `max_confidence`.
   #[must_use]
-  pub fn get_if_confidence_le(&self, max_confidence: &C) -> Option<&T> {
-    self
-      .value
-      .as_ref()
-      .filter(|(current_confidence, _)| *current_confidence <= *max_confidence)
-      .map(|(_, value)| value)
+  pub fn extract_if_confidence_le(&mut self, max_confidence: &C) -> Option<T> {
+    if let Some((current_confidence, _)) = &self.value {
+      if *current_confidence <= *max_confidence {
+        return self.value.take().map(|(_, v)| v);
+      }
+    }
+    None
   }
 
   /// Ensures a value is set, using a closure if the current confidence is insufficient.

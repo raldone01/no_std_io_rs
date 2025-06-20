@@ -1,7 +1,6 @@
 use alloc::{string::String, vec::Vec};
 
 use hashbrown::HashMap;
-use relative_path::RelativePathBuf;
 
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct TimeStamp {
@@ -11,12 +10,14 @@ pub struct TimeStamp {
 
 #[derive(Clone, Debug)]
 pub struct TarInode {
-  pub path: RelativePathBuf,
+  pub path: String,
   pub entry: FileEntry,
   pub mode: FilePermissions,
   pub uid: u32,
   pub gid: u32,
   pub mtime: TimeStamp,
+  pub atime: TimeStamp,
+  pub ctime: TimeStamp,
   pub uname: String,
   pub gname: String,
   pub unparsed_extended_attributes: HashMap<String, String>,
@@ -173,12 +174,12 @@ pub struct RegularFileEntry {
 
 #[derive(Clone, Debug)]
 pub struct HardLinkEntry {
-  pub link_target: RelativePathBuf,
+  pub link_target: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct SymbolicLinkEntry {
-  pub link_target: RelativePathBuf,
+  pub link_target: String,
 }
 
 #[derive(Clone, Debug)]

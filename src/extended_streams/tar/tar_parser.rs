@@ -1,12 +1,12 @@
 use core::{convert::Infallible, num::ParseIntError};
 
 use alloc::{
+  format,
   string::{String, ToString as _},
   vec::Vec,
 };
 
 use hashbrown::HashMap;
-use relative_path::RelativePathBuf;
 use thiserror::Error;
 use zerocopy::FromBytes as _;
 
@@ -241,7 +241,7 @@ pub struct TarParser {
   /// Stores the index of each file in `extracted_files`.
   /// Used for keeping only the last version of each file.
   /// Only used if `keep_only_last` is true.
-  seen_files: HashMap<RelativePathBuf, usize>,
+  seen_files: HashMap<String, usize>,
   keep_only_last: bool,
 
   parser_state: TarParserState,
@@ -299,11 +299,13 @@ impl<T: Clone> From<PaxConfidentValue<T>> for InodeConfidentValue<T> {
 
 #[derive(Default)]
 pub(crate) struct InodeBuilder {
-  pub(crate) file_path: InodeConfidentValue<RelativePathBuf>,
+  pub(crate) file_path: InodeConfidentValue<String>,
   pub(crate) mode: Option<FilePermissions>,
   pub(crate) uid: InodeConfidentValue<u32>,
   pub(crate) gid: InodeConfidentValue<u32>,
   pub(crate) mtime: InodeConfidentValue<TimeStamp>,
+  pub(crate) atime: InodeConfidentValue<TimeStamp>,
+  pub(crate) ctime: InodeConfidentValue<TimeStamp>,
   pub(crate) uname: InodeConfidentValue<String>,
   pub(crate) gname: InodeConfidentValue<String>,
   pub(crate) link_target: InodeConfidentValue<String>,
@@ -401,14 +403,14 @@ impl TarParser {
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
     let inode_builder = self.recover_internal();
 
-    // These clones can definitely be optimized.
+    // TODO: These clones can definitely be optimized.
     // Splitting the Inode builder into two parts would be a good start.
     let tar_inode = TarInode {
       path: inode_builder
         .file_path
         .get()
         .cloned()
-        .unwrap_or_else(|| RelativePathBuf::from("")),
+        .unwrap_or_else(|| "".to_string()),
       entry: FileEntry::Fifo,
       mode: inode_builder
         .mode
@@ -417,6 +419,8 @@ impl TarParser {
       uid: inode_builder.uid.get().cloned().unwrap_or(0),
       gid: inode_builder.gid.get().cloned().unwrap_or(0),
       mtime: inode_builder.mtime.get().cloned().unwrap_or_default(),
+      atime: inode_builder.atime.get().cloned().unwrap_or_default(),
+      ctime: inode_builder.ctime.get().cloned().unwrap_or_default(),
       uname: inode_builder.uname.get().cloned().unwrap_or_default(),
       gname: inode_builder.gname.get().cloned().unwrap_or_default(),
       unparsed_extended_attributes: self.pax_parser.drain_local_unparsed_attributes(),
@@ -537,7 +541,7 @@ impl TarParser {
           .inode_state
           .file_path
           .try_get_or_set_with(TarConfidence::V7, || {
-            old_header.parse_name().map(RelativePathBuf::from)
+            old_header.parse_name().map(String::from)
           });
         self
           .inode_state
@@ -612,24 +616,27 @@ impl TarParser {
           if let Some(potential_path) = self
             .inode_state
             .file_path
-            .get_if_confidence_le(&TarConfidence::Ustar)
+            .extract_if_confidence_le(&TarConfidence::Ustar)
           {
-            let prefix = ustar_additions
-              .parse_prefix()
-              .map(RelativePathBuf::from)
-              .unwrap_or_else(|_| RelativePathBuf::from(""));
-            self
-              .inode_state
-              .file_path
-              .set(TarConfidence::Ustar, prefix.join(potential_path));
+            let prefix = ustar_additions.parse_prefix();
+            // prefix.join(potential_path)
+            let joined = match prefix {
+              Ok(prefix) => {
+                if prefix.is_empty() {
+                  potential_path
+                } else {
+                  format!("{}/{}", prefix, potential_path)
+                }
+              },
+              Err(_) => potential_path,
+            };
+            self.inode_state.file_path.set(TarConfidence::Ustar, joined);
           } else {
             let _ = self
               .inode_state
               .file_path
               .try_get_or_set_with(TarConfidence::Ustar, || {
-                ustar_additions
-                  .parse_prefix()
-                  .map(|prefix| RelativePathBuf::from(prefix))
+                ustar_additions.parse_prefix().map(String::from)
               });
           }
         }
@@ -646,15 +653,14 @@ impl TarParser {
           .expect("BUG: Not enough bytes for GnuHeaderAdditions");
 
         if typeflag.is_file_like() {
-          // We don't care about atime or ctime so we just use them if we could not parse mtime.
           let _ = self
             .inode_state
-            .mtime
-            .try_get_or_set_with(TarConfidence::Gnu, || {
-              gnu_additions
-                .parse_atime()
-                .or_else(|_| gnu_additions.parse_ctime())
-            });
+            .atime
+            .try_get_or_set_with(TarConfidence::Gnu, || gnu_additions.parse_atime());
+          let _ = self
+            .inode_state
+            .ctime
+            .try_get_or_set_with(TarConfidence::Gnu, || gnu_additions.parse_ctime());
         }
 
         // Handle sparse entries (Old GNU Format)
@@ -698,7 +704,7 @@ impl TarParser {
             link_target: inode_state
               .link_target
               .get()
-              .map(|s| RelativePathBuf::from(s))
+              .map(|v| v.clone())
               .unwrap_or_default(),
           })
         });
@@ -710,7 +716,7 @@ impl TarParser {
             link_target: inode_state
               .link_target
               .get()
-              .map(|s| RelativePathBuf::from(s))
+              .map(|v| v.clone())
               .unwrap_or_default(),
           })
         });
@@ -852,9 +858,7 @@ impl TarParser {
             self
               .inode_state
               .file_path
-              .get_or_set_with(TarConfidence::Gnu, || {
-                Some(RelativePathBuf::from(long_name))
-              });
+              .get_or_set_with(TarConfidence::Gnu, || Some(long_name));
           },
           GnuLongNameType::LinkName => {
             self
