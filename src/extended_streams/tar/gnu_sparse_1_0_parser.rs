@@ -64,7 +64,11 @@ impl GnuSparse1_0Parser {
       false,
     );
     match copy_buffered_until_result {
-      Ok(_) | Err(CopyUntilError::DelimiterNotFound { .. }) => {},
+      Ok(_) => {},
+      Err(CopyUntilError::DelimiterNotFound { .. }) => {
+        // We need to read more data to find the delimiter
+        return Ok(ParserState::ParsingNumberOfMaps(state));
+      },
       Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
@@ -109,7 +113,11 @@ impl GnuSparse1_0Parser {
       false,
     );
     match copy_buffered_until_result {
-      Ok(_) | Err(CopyUntilError::DelimiterNotFound { .. }) => {},
+      Ok(_) => {},
+      Err(CopyUntilError::DelimiterNotFound { .. }) => {
+        // We need to read more data to find the delimiter
+        return Ok(ParserState::ParsingMapEntry(state));
+      },
       Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })

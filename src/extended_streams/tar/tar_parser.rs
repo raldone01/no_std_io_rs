@@ -815,15 +815,15 @@ impl TarParser {
   fn state_skipping_data(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-    state: StateSkippingData,
+    mut state: StateSkippingData,
   ) -> Result<TarParserState, TarParserError> {
     // incrementally skip the data
     let bytes_to_skip = state.remaining_data.min(reader.remaining());
     reader
       .skip(bytes_to_skip)
       .expect("BUG: Incremental unknown data skipping failed");
-    let remaining_data = state.remaining_data - bytes_to_skip;
-    Ok(if remaining_data == 0 {
+    state.remaining_data = state.remaining_data - bytes_to_skip;
+    Ok(if state.remaining_data == 0 {
       // We are done skipping unknown data, so we reset the parser state.
       TarParserState::default()
     } else {
@@ -844,8 +844,8 @@ impl TarParser {
       .expect("BUG: Incremental long name reading failed");
 
     state.collected_name.extend_from_slice(long_name_bytes);
-    let remaining_data = state.remaining_data - bytes_to_read;
-    Ok(if remaining_data == 0 {
+    state.remaining_data = state.remaining_data - bytes_to_read;
+    Ok(if state.remaining_data == 0 {
       // We are done reading the long name, so we parse it.
       let null_term = find_null_terminator_index(&state.collected_name);
       state.collected_name.truncate(null_term);
@@ -924,7 +924,6 @@ impl TarParser {
   ) -> Result<TarParserState, TarParserError> {
     // incrementally read the PAX data
     let bytes_to_read = state.remaining_data.min(reader.remaining());
-    let debug_str = str::from_utf8(reader.peek_exact(80).unwrap()).unwrap();
     let pax_bytes = reader
       .peek_exact(bytes_to_read)
       .expect("BUG: Incremental PAX data reading failed");
