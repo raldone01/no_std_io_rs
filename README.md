@@ -38,6 +38,7 @@ Features of this crate:
 * Add doc comments with examples to all public functions and structs.
 * Add audit log to tar parser to track spec violations
 * Write a tar fuzzer
+* Configure limits for all growable buffers in the tar parser.
 
 # TODO no_std_io:
 

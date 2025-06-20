@@ -883,7 +883,7 @@ impl TarParser {
     })
   }
 
-  fn state_expecting_old_gnu_sparse_extended_header(
+  fn state_reading_old_gnu_sparse_extended_header(
     &mut self,
     reader: &mut Cursor<&[u8]>,
     mut state: StateReadingOldGnuSparseExtendedHeader,
@@ -1016,7 +1016,7 @@ impl Write for TarParser {
         self.state_parsing_gnu_long_name(&mut reader, state)?
       },
       TarParserState::ReadingOldGnuSparseExtendedHeader(state) => {
-        self.state_expecting_old_gnu_sparse_extended_header(&mut reader, state)?
+        self.state_reading_old_gnu_sparse_extended_header(&mut reader, state)?
       },
       TarParserState::ParsingPaxData(state) => self.state_parsing_pax_data(&mut reader, state)?,
       TarParserState::ParsingGnuSparse1_0(state) => {

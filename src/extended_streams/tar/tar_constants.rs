@@ -387,7 +387,7 @@ impl GnuHeaderAdditions {
 
   #[must_use]
   pub fn parse_is_extended(&self) -> bool {
-    self.is_extended[0] == b'1'
+    self.is_extended[0] != 0
   }
 
   pub fn parse_real_size(&self) -> Result<u64, ParseOctalError> {
@@ -444,7 +444,7 @@ pub(crate) struct GnuHeaderExtSparse {
 impl GnuHeaderExtSparse {
   #[must_use]
   pub fn parse_is_extended(&self) -> bool {
-    self.is_extended[0] == b'1'
+    self.is_extended[0] != 0
   }
 }
 

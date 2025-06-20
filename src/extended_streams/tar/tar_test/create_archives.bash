@@ -71,22 +71,24 @@ done
 
 # Create tar archives using different formats
 
+# gnu, oldgnu, posix, ustar, v7
+
 # POSIX.1-2001 pax format (recommended, handles long names and special files)
-tar --format=pax -cf test-pax.tar test-archive
+tar --format=posix -cf test-pax.tar test-archive
 
 # GNU tar formats
 
-# GNU tar without sparse support (handles long names and special files)
-tar --format=gnu -cf test-gnu-nosparse.tar test-archive
+# GNU tar old sparse format
+tar --format=oldgnu --sparse -cf test-gnu-oldsparse.tar test-archive
 
 # GNU sparse format version 0.0
-tar --format=gnu --sparse-version=0.0 -cf test-gnu-sparse-0.0.tar test-archive
+tar --format=posix --sparse-version=0.0 -cf test-gnu-sparse-0.0.tar test-archive
 
 # GNU sparse format version 0.1
-tar --format=gnu --sparse-version=0.1 -cf test-gnu-sparse-0.1.tar test-archive
+tar --format=posix --sparse-version=0.1 -cf test-gnu-sparse-0.1.tar test-archive
 
 # GNU sparse format version 1.0
-tar --format=gnu --sparse-version=1.0 -cf test-gnu-sparse-1.0.tar test-archive
+tar --format=posix --sparse-version=1.0 -cf test-gnu-sparse-1.0.tar test-archive
 
 # POSIX ustar format (will warn about long file names)
 echo "--- Creating ustar archive (expect warnings about long names) ---"
@@ -101,7 +103,7 @@ echo "-------------------------------------------"
 # Create gzip-compressed versions
 gzip -k -f test-pax.tar
 
-gzip -k -f test-gnu-nosparse.tar
+gzip -k -f test-gnu-oldsparse.tar
 gzip -k -f test-gnu-sparse-0.0.tar
 gzip -k -f test-gnu-sparse-0.1.tar
 gzip -k -f test-gnu-sparse-1.0.tar
@@ -113,7 +115,7 @@ echo
 echo "Archives created:"
 echo "  Uncompressed:"
 echo "    test-pax.tar"
-echo "    test-gnu-nosparse.tar"
+echo "    test-gnu-oldsparse.tar"
 echo "    test-gnu-sparse-0.0.tar"
 echo "    test-gnu-sparse-0.1.tar"
 echo "    test-gnu-sparse-1.0.tar"
@@ -121,7 +123,7 @@ echo "    test-ustar.tar"
 echo "    test-v7.tar"
 echo "  Compressed:"
 echo "    test-pax.tar.gz"
-echo "    test-gnu-nosparse.tar.gz"
+echo "    test-gnu-oldsparse.tar.gz"
 echo "    test-gnu-sparse-0.0.tar.gz"
 echo "    test-gnu-sparse-0.1.tar.gz"
 echo "    test-gnu-sparse-1.0.tar.gz"
