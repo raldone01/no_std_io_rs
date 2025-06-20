@@ -21,8 +21,8 @@ use crate::{
       GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
       UstarHeaderAdditions, V7Header, BLOCK_SIZE,
     },
-    BlockDeviceEntry, CharacterDeviceEntry, FileEntry, FilePermissions, HardLinkEntry,
-    SymbolicLinkEntry, TarInode,
+    BlockDeviceEntry, CharacterDeviceEntry, FileData, FileEntry, FilePermissions, HardLinkEntry,
+    RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry, TarInode,
   },
   BufferedRead as _, Write, WriteAll as _,
 };
@@ -72,12 +72,6 @@ impl From<PaxConfidence> for TarConfidence {
       PaxConfidence::GLOBAL => TarConfidence::PaxGlobal,
     }
   }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SparseFileInstruction {
-  pub(crate) offset_before: u64,
-  pub(crate) data_size: u64,
 }
 
 impl TryFrom<&GnuSparseInstruction> for SparseFileInstruction {
@@ -332,6 +326,23 @@ pub(crate) struct InodeBuilder {
   pub(crate) dev_minor: u32,
   pub(crate) data_after_header_size: InodeConfidentValue<usize>,
   pub(crate) continuous_file: bool,
+  pub(crate) data: Vec<u8>,
+}
+
+impl From<InodeBuilder> for RegularFileEntry {
+  fn from(inode_builder: InodeBuilder) -> Self {
+    let continuous = inode_builder.continuous_file;
+    let data = if inode_builder.sparse_file_instructions.is_empty() {
+      FileData::Regular(inode_builder.data)
+    } else {
+      FileData::Sparse {
+        instructions: inode_builder.sparse_file_instructions,
+        data: inode_builder.data,
+      }
+    };
+
+    Self { continuous, data }
+  }
 }
 
 impl TarParser {
@@ -395,12 +406,12 @@ impl TarParser {
     }
   }
 
-  fn finish_inode(&mut self, file_entry: impl FnOnce(&mut Self) -> FileEntry) -> TarParserState {
+  fn finish_inode(&mut self, file_entry: impl FnOnce(&mut Self, InodeBuilder) -> FileEntry) {
     self
       .pax_parser
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
     let tar_inode = self.recover_internal();
-    let file_entry = file_entry(self);
+    let file_entry = file_entry(self, tar_inode);
 
     //let inode = TarInode {
 
@@ -423,6 +434,21 @@ impl TarParser {
         remaining_data: data_after_header,
         padding_after: padding_after_data,
       })
+    }
+  }
+
+  fn compute_opt_skip_state(
+    &mut self,
+    data_after_header: usize,
+    context: &'static str,
+  ) -> TarParserState {
+    if data_after_header > 0 {
+      TarParserState::SkippingData(StateSkippingData {
+        remaining_data: data_after_header,
+        context,
+      })
+    } else {
+      TarParserState::default()
     }
   }
 
@@ -616,40 +642,61 @@ impl TarParser {
         self.inode_state.continuous_file = false;
         self.compute_file_parsing_state(data_after_header, padding_after_data)
       },
-      TarTypeFlag::HardLink => self.finish_inode(|selv| {
-        FileEntry::HardLink(HardLinkEntry {
-          link_target: selv
-            .inode_state
-            .link_target
-            .get()
-            .map(|s| RelativePathBuf::from(s))
-            .unwrap_or_default(),
-        })
-      }),
-      TarTypeFlag::SymbolicLink => self.finish_inode(|selv| {
-        FileEntry::SymbolicLink(SymbolicLinkEntry {
-          link_target: selv
-            .inode_state
-            .link_target
-            .get()
-            .map(|s| RelativePathBuf::from(s))
-            .unwrap_or_default(),
-        })
-      }),
-      TarTypeFlag::CharacterDevice => self.finish_inode(|selv| {
-        FileEntry::CharacterDevice(CharacterDeviceEntry {
-          major: selv.inode_state.dev_major,
-          minor: selv.inode_state.dev_minor,
-        })
-      }),
-      TarTypeFlag::BlockDevice => self.finish_inode(|selv| {
-        FileEntry::BlockDevice(BlockDeviceEntry {
-          major: selv.inode_state.dev_major,
-          minor: selv.inode_state.dev_minor,
-        })
-      }),
-      TarTypeFlag::Directory => self.finish_inode(|_| FileEntry::Directory),
-      TarTypeFlag::Fifo => self.finish_inode(|_| FileEntry::Fifo),
+      TarTypeFlag::HardLink => {
+        self.finish_inode(|selv, inode_state| {
+          FileEntry::HardLink(HardLinkEntry {
+            link_target: inode_state
+              .link_target
+              .get()
+              .map(|s| RelativePathBuf::from(s))
+              .unwrap_or_default(),
+          })
+        });
+        self.compute_opt_skip_state(data_after_header_block_aligned, "Data after HardLink")
+      },
+      TarTypeFlag::SymbolicLink => {
+        self.finish_inode(|selv, inode_state| {
+          FileEntry::SymbolicLink(SymbolicLinkEntry {
+            link_target: inode_state
+              .link_target
+              .get()
+              .map(|s| RelativePathBuf::from(s))
+              .unwrap_or_default(),
+          })
+        });
+
+        self.compute_opt_skip_state(data_after_header_block_aligned, "Data after SymbolicLink")
+      },
+      TarTypeFlag::CharacterDevice => {
+        self.finish_inode(|selv, inode_state| {
+          FileEntry::CharacterDevice(CharacterDeviceEntry {
+            major: inode_state.dev_major,
+            minor: inode_state.dev_minor,
+          })
+        });
+
+        self.compute_opt_skip_state(
+          data_after_header_block_aligned,
+          "Data after CharacterDevice",
+        )
+      },
+      TarTypeFlag::BlockDevice => {
+        self.finish_inode(|selv, inode_state| {
+          FileEntry::BlockDevice(BlockDeviceEntry {
+            major: inode_state.dev_major,
+            minor: inode_state.dev_minor,
+          })
+        });
+        self.compute_opt_skip_state(data_after_header_block_aligned, "Data after BlockDevice")
+      },
+      TarTypeFlag::Directory => {
+        self.finish_inode(|_, _| FileEntry::Directory);
+        self.compute_opt_skip_state(data_after_header_block_aligned, "Data after Directory")
+      },
+      TarTypeFlag::Fifo => {
+        self.finish_inode(|_, _| FileEntry::Fifo);
+        self.compute_opt_skip_state(data_after_header_block_aligned, "Data after Fifo")
+      },
       TarTypeFlag::ContinuousFile => {
         self.inode_state.continuous_file = true;
         self.compute_file_parsing_state(data_after_header, padding_after_data)
@@ -701,10 +748,7 @@ impl TarParser {
       },
       TarTypeFlag::UnknownTypeFlag(_) => {
         // we just skip the data_after_header bytes if we don't know the typeflag
-        TarParserState::SkippingData(StateSkippingData {
-          remaining_data: data_after_header_block_aligned,
-          context: "Unknown typeflag",
-        })
+        self.compute_opt_skip_state(data_after_header_block_aligned, "Unknown typeflag")
       },
     })
   }
@@ -867,6 +911,31 @@ impl TarParser {
       padding_after: state.padding_after,
     }))
   }
+
+  fn state_reading_file_data(
+    &mut self,
+    reader: &mut Cursor<&[u8]>,
+    mut state: StateReadingFileData,
+  ) -> Result<TarParserState, TarParserError> {
+    // incrementally read the file data
+    let bytes_to_read = state.remaining_data.min(reader.remaining());
+    let file_data_bytes = reader
+      .read_exact(bytes_to_read)
+      .expect("BUG: Incremental file data reading failed");
+
+    self.inode_state.data.extend_from_slice(file_data_bytes);
+    state.remaining_data -= bytes_to_read;
+
+    if state.remaining_data != 0 {
+      // We still have some data to read, so we keep the parser state.
+      return Ok(TarParserState::ReadingFileData(state));
+    }
+
+    // We are done reading the file data, so we can finish the inode.
+    self.finish_inode(|selv, inode_state| FileEntry::RegularFile(inode_state.into()));
+
+    Ok(self.compute_opt_skip_state(state.padding_after, "Padding after file data"))
+  }
 }
 
 impl Write for TarParser {
@@ -895,9 +964,7 @@ impl Write for TarParser {
       TarParserState::ParsingGnuSparse1_0(state) => {
         self.state_parsing_gnu_sparse_1_0(&mut reader, state)?
       },
-      TarParserState::ReadingFileData(state) => {
-        todo!()
-      },
+      TarParserState::ReadingFileData(state) => self.state_reading_file_data(&mut reader, state)?,
       TarParserState::NoNextStateSet => {
         panic!("BUG: No next state set in TarParser");
       },

@@ -73,7 +73,7 @@ impl FilePermissions {
 }
 
 pub enum FileEntry {
-  Regular(RegularFileEntry),
+  RegularFile(RegularFileEntry),
   HardLink(HardLinkEntry),
   SymbolicLink(SymbolicLinkEntry),
   CharacterDevice(CharacterDeviceEntry),
@@ -82,14 +82,18 @@ pub enum FileEntry {
   Fifo,
 }
 
-pub struct SparseEntry {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SparseFileInstruction {
   pub offset_before: u64,
-  pub data: Vec<u8>,
+  pub data_size: u64,
 }
 
 pub enum FileData {
   Regular(Vec<u8>),
-  Sparse(Vec<SparseEntry>),
+  Sparse {
+    instructions: Vec<SparseFileInstruction>,
+    data: Vec<u8>,
+  },
 }
 
 pub struct RegularFileEntry {

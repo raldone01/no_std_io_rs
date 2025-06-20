@@ -365,7 +365,7 @@ impl GnuHeaderAdditions {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, PartialEq, Eq)]
 #[repr(C)]
-pub struct GnuSparseInstruction {
+pub(crate) struct GnuSparseInstruction {
   /// Offset of the beginning of the chunk.
   pub offset: [u8; 12],
   /// Size of the chunk.
