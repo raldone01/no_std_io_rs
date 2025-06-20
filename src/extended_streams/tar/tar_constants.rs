@@ -44,7 +44,7 @@ pub const TAR_ZERO_HEADER: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
 /// ## RARE:
 ///
 /// - `X` for solaris extended header (pre-pax)
-#[derive(Eq, Hash, PartialEq, Clone)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub enum TarTypeFlag {
   /// Regular file
   RegularFile,
@@ -73,6 +73,28 @@ pub enum TarTypeFlag {
   /// GNU extension - sparse file
   SparseOldGnu,
   UnknownTypeFlag(u8),
+}
+
+impl TarTypeFlag {
+  #[must_use]
+  pub fn is_file_like(&self) -> bool {
+    matches!(
+      self,
+      TarTypeFlag::RegularFile
+        | TarTypeFlag::HardLink
+        | TarTypeFlag::SymbolicLink
+        | TarTypeFlag::CharacterDevice
+        | TarTypeFlag::BlockDevice
+        | TarTypeFlag::Directory
+        | TarTypeFlag::Fifo
+        | TarTypeFlag::ContinuousFile
+    )
+  }
+
+  #[must_use]
+  pub fn is_link_like(&self) -> bool {
+    matches!(self, TarTypeFlag::HardLink | TarTypeFlag::SymbolicLink)
+  }
 }
 
 impl From<u8> for TarTypeFlag {

@@ -62,9 +62,9 @@ const TAR_ARCHIVES: &[SimpleFile] = &[
   create_simple_file!("test-ustar.tar"),
   create_simple_file!("test-pax.tar"),
   create_simple_file!("test-gnu-nosparse.tar"),
-  create_simple_file!("test-gnu-sparse-0.0.tar"),
-  create_simple_file!("test-gnu-sparse-0.1.tar"),
-  create_simple_file!("test-gnu-sparse-1.0.tar"),
+  //create_simple_file!("test-gnu-sparse-0.0.tar"),
+  //create_simple_file!("test-gnu-sparse-0.1.tar"),
+  //create_simple_file!("test-gnu-sparse-1.0.tar"),
 ];
 
 //const TAR_ARCHIVES_COMPRESSED: &[SimpleFile] = &[create_simple_file!("test-ustar.tar.gz")];

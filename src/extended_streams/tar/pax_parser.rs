@@ -1,6 +1,6 @@
 use core::panic;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::TryReserveError, string::String, vec::Vec};
 use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
 
@@ -269,7 +269,11 @@ impl PaxParser {
       .update_with(Self::to_confident_value(self.uname.get_with_confidence()));
   }
 
-  pub fn recover(&mut self, pax_mode: PaxConfidence) {
+  pub fn set_current_pax_mode(&mut self, pax_confidence: PaxConfidence) {
+    self.current_pax_mode = pax_confidence;
+  }
+
+  pub fn recover(&mut self) {
     // Reset the local unparsed attributes
     self.unparsed_attributes.clear();
     // Reset all parsed local attributes
@@ -290,7 +294,6 @@ impl PaxParser {
 
     // Reset the parser state to default
     self.state = PaxParserState::default();
-    self.current_pax_mode = pax_mode;
     self.sparse_instruction_builder = Default::default();
   }
 
@@ -531,6 +534,8 @@ impl PaxParser {
     cursor: &mut Cursor<&[u8]>,
     mut state: StateParsingNewKV,
   ) -> Result<PaxParserState, TarParserError> {
+    let debug_buffer_char = str::from_utf8(cursor.full_buffer());
+
     // Read the length until we hit a space or newline
     let copy_buffered_until_result = cursor.copy_buffered_until(
       &mut &mut state.kv_cursor,
@@ -539,7 +544,13 @@ impl PaxParser {
       false,
     );
     match copy_buffered_until_result {
-      Ok(_) | Err(CopyUntilError::DelimiterNotFound { .. }) => {},
+      Ok(_) => {
+        // Successfully read the length, now we can parse it
+      },
+      Err(CopyUntilError::DelimiterNotFound { .. }) => {
+        // Not enough data in the current `bytes` slice, preserve state and wait for more
+        return Ok(PaxParserState::ParsingNewKV(state));
+      },
       Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
@@ -575,31 +586,41 @@ impl PaxParser {
     cursor: &mut Cursor<&[u8]>,
     mut state: StateParsingKey,
   ) -> Result<PaxParserState, TarParserError> {
-    while cursor.position() < cursor.full_buffer().len() {
-      if state.length == 0 {
-        // We've consumed the entire record length but haven't found the '='
-        return Err(TarParserError::CorruptPaxKey);
-      }
-
-      let byte = cursor.full_buffer()[cursor.position()];
-      cursor.set_position(cursor.position() + 1);
-      state.length -= 1;
-
-      if byte == b'=' {
+    // Read the length until we hit an equals sign
+    let copy_buffered_until_result = cursor.copy_buffered_until(
+      &mut &mut state.keyword,
+      false,
+      |byte: &u8| *byte == b'=',
+      false,
+    );
+    match copy_buffered_until_result {
+      Ok(_) => {
+        let length_after_equals = state.length.saturating_sub(state.keyword.len() + 1);
+        if length_after_equals == 0 {
+          // If the length is 0, we are done with this key-value pair
+          return Ok(PaxParserState::default());
+        }
         let key = String::from_utf8(state.keyword).map_err(|_| TarParserError::CorruptPaxKey)?;
-
         return Ok(PaxParserState::ParsingValue(StateParsingValue {
           key,
-          length_after_equals: state.length,
+          length_after_equals,
           value: Vec::new(),
         }));
-      } else {
-        state.keyword.push(byte);
-      }
+      },
+      Err(CopyUntilError::DelimiterNotFound { .. }) => {
+        // Not enough data in the current `bytes` slice, preserve state and wait for more.
+        return Ok(PaxParserState::ParsingKey(state));
+      },
+      Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
+      Err(
+        CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
+        | CopyUntilError::IoWrite(WriteAllError::Io(TryReserveError { .. })),
+      ) => {
+        return Err(TarParserError::CorruptPaxLength {
+          max_length_field_length: state.keyword.len(),
+        })
+      },
     }
-
-    // Not enough data in the current `bytes` slice, preserve state and wait for more.
-    Ok(PaxParserState::ParsingKey(state))
   }
 
   fn state_parsing_value(
@@ -736,8 +757,13 @@ mod tests {
     let data =
       b"30 mtime=1749954382.774290089\n20 atime=1749803808\n30 ctime=1749954382.774290089\n";
     let mut bytewise_writer = BytewiseWriter::new(&mut parser);
-    bytewise_writer.write_all(data, false).unwrap();
+    let write_result = bytewise_writer.write_all(data, false);
 
+    assert!(
+      write_result.is_ok(),
+      "Failed to write data: {:?}",
+      write_result.err()
+    );
     assert_eq!(
       parser.mtime.get(),
       Some(&ConfidentValue::new(

@@ -350,7 +350,7 @@ impl TarParser {
   }
 
   fn recover_internal(&mut self) -> InodeBuilder {
-    self.pax_parser.recover(PaxConfidence::LOCAL);
+    self.pax_parser.recover();
     self
       .pax_parser
       .load_pax_attributes_into_inode_builder(&mut self.inode_state);
@@ -517,37 +517,6 @@ impl TarParser {
         .verify_checksum()
         .map_err(TarParserError::CorruptHeaderChecksum)?;
 
-      // parse the information from the old header
-      let _ = self
-        .inode_state
-        .file_path
-        .try_get_or_set_with(TarConfidence::V7, || {
-          old_header.parse_name().map(RelativePathBuf::from)
-        });
-      self
-        .inode_state
-        .mode
-        .get_or_insert_with_option(|| old_header.parse_mode());
-      let _ = self
-        .inode_state
-        .uid
-        .try_get_or_set_with(TarConfidence::V7, || old_header.parse_uid());
-      let _ = self
-        .inode_state
-        .gid
-        .try_get_or_set_with(TarConfidence::V7, || old_header.parse_gid());
-      let _ = self
-        .inode_state
-        .data_after_header_size
-        .try_get_or_set_with(TarConfidence::V7, || {
-          old_header.parse_size().map(|s| s as usize)
-        });
-
-      let _ = self
-        .inode_state
-        .mtime
-        .try_get_or_set_with(TarConfidence::V7, || old_header.parse_mtime());
-
       typeflag = old_header.parse_typeflag();
       if let Some(count) = self.found_type_flags.get_mut(&typeflag) {
         *count += 1;
@@ -555,12 +524,48 @@ impl TarParser {
         self.found_type_flags.insert(typeflag.clone(), 1);
       }
 
+      // parse the information from the old header
       let _ = self
         .inode_state
-        .link_target
+        .data_after_header_size
         .try_get_or_set_with(TarConfidence::V7, || {
-          old_header.parse_linkname().map(String::from)
+          old_header.parse_size().map(|s| s as usize)
         });
+
+      if typeflag.is_file_like() {
+        let _ = self
+          .inode_state
+          .file_path
+          .try_get_or_set_with(TarConfidence::V7, || {
+            old_header.parse_name().map(RelativePathBuf::from)
+          });
+        self
+          .inode_state
+          .mode
+          .get_or_insert_with_option(|| old_header.parse_mode());
+        let _ = self
+          .inode_state
+          .uid
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_uid());
+        let _ = self
+          .inode_state
+          .gid
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_gid());
+
+        let _ = self
+          .inode_state
+          .mtime
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_mtime());
+      }
+
+      if typeflag.is_link_like() {
+        let _ = self
+          .inode_state
+          .link_target
+          .try_get_or_set_with(TarConfidence::V7, || {
+            old_header.parse_linkname().map(String::from)
+          });
+      }
 
       Ok(())
     };
@@ -593,72 +598,78 @@ impl TarParser {
       },
       V7Header::MAGIC_VERSION_USTAR => {
         parse_v7_header()?;
-        let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
-          .expect("BUG: Not enough bytes for CommonHeaderAdditions in USTAR");
-        parse_common_header_additions(common_header_additions)?;
-        let ustar_additions =
-          UstarHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
-            .expect("BUG: Not enough bytes for UstarHeaderAdditions");
 
-        // If there is already a path with a confidence of USTAR or less, we want to prefix the path with the ustar prefix.
-        // If there is no path, we want to use the ustar prefix as the path.
-        if let Some(potential_path) = self
-          .inode_state
-          .file_path
-          .get_if_confidence_le(&TarConfidence::Ustar)
-        {
-          let prefix = ustar_additions
-            .parse_prefix()
-            .map(RelativePathBuf::from)
-            .unwrap_or_else(|_| RelativePathBuf::from(""));
-          self
+        if typeflag.is_file_like() {
+          let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
+            .expect("BUG: Not enough bytes for CommonHeaderAdditions in USTAR");
+          parse_common_header_additions(common_header_additions)?;
+          let ustar_additions =
+            UstarHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
+              .expect("BUG: Not enough bytes for UstarHeaderAdditions");
+
+          // If there is already a path with a confidence of USTAR or less, we want to prefix the path with the ustar prefix.
+          // If there is no path, we want to use the ustar prefix as the path.
+          if let Some(potential_path) = self
             .inode_state
             .file_path
-            .set(TarConfidence::Ustar, prefix.join(potential_path));
-        } else {
-          let _ = self
-            .inode_state
-            .file_path
-            .try_get_or_set_with(TarConfidence::Ustar, || {
-              ustar_additions
-                .parse_prefix()
-                .map(|prefix| RelativePathBuf::from(prefix))
-            });
+            .get_if_confidence_le(&TarConfidence::Ustar)
+          {
+            let prefix = ustar_additions
+              .parse_prefix()
+              .map(RelativePathBuf::from)
+              .unwrap_or_else(|_| RelativePathBuf::from(""));
+            self
+              .inode_state
+              .file_path
+              .set(TarConfidence::Ustar, prefix.join(potential_path));
+          } else {
+            let _ = self
+              .inode_state
+              .file_path
+              .try_get_or_set_with(TarConfidence::Ustar, || {
+                ustar_additions
+                  .parse_prefix()
+                  .map(|prefix| RelativePathBuf::from(prefix))
+              });
+          }
         }
 
         // Done ustar header parsing.
       },
       V7Header::MAGIC_VERSION_GNU => {
         parse_v7_header()?;
-        let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
-          .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
-        parse_common_header_additions(common_header_additions)?;
-        let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
-          .expect("BUG: Not enough bytes for GnuHeaderAdditions");
 
-        // We don't care about atime or ctime so we just use them if we could not parse mtime.
-        let _ = self
-          .inode_state
-          .mtime
-          .try_get_or_set_with(TarConfidence::Gnu, || {
-            gnu_additions
-              .parse_atime()
-              .or_else(|_| gnu_additions.parse_ctime())
-          });
+        if typeflag.is_file_like() {
+          let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
+            .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
+          parse_common_header_additions(common_header_additions)?;
+          let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
+            .expect("BUG: Not enough bytes for GnuHeaderAdditions");
 
-        // Handle sparse entries (Old GNU Format)
-        if typeflag == TarTypeFlag::SparseOldGnu {
-          self.inode_state.sparse_format = Some(SparseFormat::GnuOld);
-          Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &gnu_additions.sparse);
-          old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
+          // We don't care about atime or ctime so we just use them if we could not parse mtime.
+          let _ = self
+            .inode_state
+            .mtime
+            .try_get_or_set_with(TarConfidence::Gnu, || {
+              gnu_additions
+                .parse_atime()
+                .or_else(|_| gnu_additions.parse_ctime())
+            });
+
+          // Handle sparse entries (Old GNU Format)
+          if typeflag == TarTypeFlag::SparseOldGnu {
+            self.inode_state.sparse_format = Some(SparseFormat::GnuOld);
+            Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &gnu_additions.sparse);
+            old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
+          }
+
+          let _ = self
+            .inode_state
+            .sparse_real_size
+            .try_get_or_set_with(TarConfidence::Gnu, || {
+              gnu_additions.parse_real_size().map(|s| s as usize)
+            });
         }
-
-        let _ = self
-          .inode_state
-          .sparse_real_size
-          .try_get_or_set_with(TarConfidence::Gnu, || {
-            gnu_additions.parse_real_size().map(|s| s as usize)
-          });
 
         // Done GNU header parsing.
       },
@@ -741,7 +752,7 @@ impl TarParser {
         self.compute_file_parsing_state(data_after_header, padding_after_data)
       },
       TarTypeFlag::PaxExtendedHeader => {
-        self.pax_parser.recover(PaxConfidence::LOCAL);
+        self.pax_parser.set_current_pax_mode(PaxConfidence::LOCAL);
         TarParserState::ParsingPaxData(StateParsingPaxData {
           remaining_data: data_after_header,
           padding_after: padding_after_data,
@@ -749,7 +760,7 @@ impl TarParser {
         })
       },
       TarTypeFlag::PaxGlobalExtendedHeader => {
-        self.pax_parser.recover(PaxConfidence::GLOBAL);
+        self.pax_parser.set_current_pax_mode(PaxConfidence::GLOBAL);
         TarParserState::ParsingPaxData(StateParsingPaxData {
           remaining_data: data_after_header,
           padding_after: padding_after_data,
@@ -902,7 +913,7 @@ impl TarParser {
   fn state_parsing_pax_data(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-    state: StateParsingPaxData,
+    mut state: StateParsingPaxData,
   ) -> Result<TarParserState, TarParserError> {
     // incrementally read the PAX data
     let bytes_to_read = state.remaining_data.min(reader.remaining());
@@ -917,8 +928,8 @@ impl TarParser {
       .skip(bytes_read)
       .expect("BUG: Incremental PAX data reading failed");
 
-    let remaining_data = state.remaining_data - bytes_read;
-    Ok(if remaining_data == 0 {
+    state.remaining_data = state.remaining_data - bytes_read;
+    Ok(if state.remaining_data == 0 {
       // We are done reading the PAX data, so we reset the parser state.
       if state.padding_after > 0 {
         // We have some padding after the PAX data, so we skip it.
