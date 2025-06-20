@@ -3,13 +3,19 @@ use alloc::{string::String, vec::Vec};
 use hashbrown::HashMap;
 use relative_path::RelativePathBuf;
 
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub struct TimeStamp {
+  pub seconds_since_epoch: u64,
+  pub nanoseconds: u32,
+}
+
 pub struct TarInode {
   pub path: RelativePathBuf,
   pub entry: FileEntry,
   pub mode: FilePermissions,
   pub uid: u32,
   pub gid: u32,
-  pub mtime: u64,
+  pub mtime: TimeStamp,
   pub uname: String,
   pub gname: String,
   pub unparsed_extended_attributes: HashMap<String, String>,

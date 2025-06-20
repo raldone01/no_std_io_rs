@@ -13,9 +13,10 @@ use crate::{
         GNU_SPARSE_MAP_0_1, GNU_SPARSE_MAP_NUM_BLOCKS_0_01, GNU_SPARSE_MINOR,
         GNU_SPARSE_NAME_01_01, GNU_SPARSE_REALSIZE_0_01, GNU_SPARSE_REALSIZE_1_0,
       },
-      ATIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
+      ATIME, CTIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
     },
     InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat, TarParserError,
+    TimeStamp,
   },
   CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, Write, WriteAllError,
 };
@@ -27,9 +28,10 @@ pub(crate) enum PaxConfidence {
   LOCAL,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 enum DateConfidence {
-  ATIME = 1,
+  CTIME = 1,
+  ATIME,
   MTIME,
 }
 
@@ -51,6 +53,14 @@ impl<T> PaxConfidentValue<T> {
       Some(local_value)
     } else {
       self.global.as_ref()
+    }
+  }
+
+  pub fn get_mut(&mut self) -> Option<&mut T> {
+    if let Some(local_value) = &mut self.local {
+      Some(local_value)
+    } else {
+      self.global.as_mut()
     }
   }
 
@@ -134,7 +144,7 @@ pub struct PaxParser {
   gnu_sparse_minor: PaxConfidentValue<u32>,
   gnu_sparse_realsize_0_01: PaxConfidentValue<usize>,
   gnu_sparse_map_local: Vec<SparseFileInstruction>,
-  mtime: PaxConfidentValue<ConfidentValue<DateConfidence, u64>>,
+  mtime: PaxConfidentValue<ConfidentValue<DateConfidence, TimeStamp>>,
   gid: PaxConfidentValue<u32>,
   gname: PaxConfidentValue<String>,
   link_path: PaxConfidentValue<String>,
@@ -179,6 +189,26 @@ impl PaxParser {
       inode_confident_value.set(confidence.into(), value);
     }
     inode_confident_value
+  }
+
+  /// Parses a time value in the format "seconds.nanoseconds" or "seconds"
+  fn parse_time(value: &str) -> Option<TimeStamp> {
+    let parts: Vec<&str> = value.split('.').collect();
+    if parts.is_empty() || parts.len() > 2 {
+      return None; // Invalid format
+    }
+
+    let seconds = parts[0].parse::<u64>().ok()?;
+    let nanoseconds = if parts.len() == 2 {
+      parts[1].parse::<u32>().ok()?
+    } else {
+      0 // Default to 0 nanoseconds if not provided
+    };
+
+    Some(TimeStamp {
+      seconds_since_epoch: seconds,
+      nanoseconds,
+    })
   }
 
   pub fn load_pax_attributes_into_inode_builder(&self, inode_builder: &mut InodeBuilder) {
@@ -401,11 +431,19 @@ impl PaxParser {
         }
       },
       ATIME => {
-        if let Ok(parsed_value) = value.parse::<u64>() {
-          self.mtime.insert_with_confidence(
-            PaxConfidence::LOCAL,
-            ConfidentValue::new(DateConfidence::ATIME, parsed_value),
-          );
+        if let Some(parsed_value) = Self::parse_time(value.as_str()) {
+          match self.mtime.get_mut() {
+            Some(existing_value) => {
+              let confident_value = ConfidentValue::new(DateConfidence::ATIME, &parsed_value);
+              existing_value.update_with(confident_value);
+            },
+            None => {
+              let confident_value = ConfidentValue::new(DateConfidence::ATIME, parsed_value);
+              self
+                .mtime
+                .insert_with_confidence(PaxConfidence::LOCAL, confident_value);
+            },
+          }
         }
       },
       GID => {
@@ -420,11 +458,35 @@ impl PaxParser {
         self.link_path.insert_with_confidence(confidence, value);
       },
       MTIME => {
-        if let Ok(parsed_value) = value.parse::<u64>() {
-          self.mtime.insert_with_confidence(
-            PaxConfidence::LOCAL,
-            ConfidentValue::new(DateConfidence::MTIME, parsed_value),
-          );
+        if let Some(parsed_value) = Self::parse_time(value.as_str()) {
+          match self.mtime.get_mut() {
+            Some(existing_value) => {
+              let confident_value = ConfidentValue::new(DateConfidence::MTIME, &parsed_value);
+              existing_value.update_with(confident_value);
+            },
+            None => {
+              let confident_value = ConfidentValue::new(DateConfidence::MTIME, parsed_value);
+              self
+                .mtime
+                .insert_with_confidence(PaxConfidence::LOCAL, confident_value);
+            },
+          }
+        }
+      },
+      CTIME => {
+        if let Some(parsed_value) = Self::parse_time(value.as_str()) {
+          match self.mtime.get_mut() {
+            Some(existing_value) => {
+              let confident_value = ConfidentValue::new(DateConfidence::CTIME, &parsed_value);
+              existing_value.update_with(confident_value);
+            },
+            None => {
+              let confident_value = ConfidentValue::new(DateConfidence::CTIME, parsed_value);
+              self
+                .mtime
+                .insert_with_confidence(PaxConfidence::LOCAL, confident_value);
+            },
+          }
         }
       },
       PATH => {
@@ -627,7 +689,7 @@ mod tests {
 
   use alloc::{string::ToString as _, vec};
 
-  use crate::{WriteAll as _, WriteAllError};
+  use crate::{BytewiseWriter, WriteAll as _, WriteAllError};
 
   #[test]
   fn test_new_with_initial_global_attributes() {
@@ -665,6 +727,27 @@ mod tests {
     parser.write_all(data, false).unwrap();
 
     assert_eq!(parser.path.get(), Some(&RelativePathBuf::from("some/file")));
+    assert_eq!(parser.state, PaxParserState::default());
+  }
+
+  #[test]
+  fn test_multiple_kv_parsing_from_archive() {
+    let mut parser = PaxParser::default();
+    let data =
+      b"30 mtime=1749954382.774290089\n20 atime=1749803808\n30 ctime=1749954382.774290089\n";
+    let mut bytewise_writer = BytewiseWriter::new(&mut parser);
+    bytewise_writer.write_all(data, false).unwrap();
+
+    assert_eq!(
+      parser.mtime.get(),
+      Some(&ConfidentValue::new(
+        DateConfidence::MTIME,
+        TimeStamp {
+          seconds_since_epoch: 1749954382,
+          nanoseconds: 774290089,
+        }
+      ))
+    );
     assert_eq!(parser.state, PaxParserState::default());
   }
 
@@ -721,17 +804,6 @@ mod tests {
       )))
     ));
   }
-
-  /*#[test] This should just end up in the audit log
-  fn test_parser_error_bad_key() {
-    let mut parser = PaxParser::default();
-    // The length 10 covers " pathfoo\n". There is no '='.
-    let data = b"11 pathfoo\n";
-    assert_eq!(
-      parser.write_all(data, false),
-      Err(WriteAllError::Io(TarParserError::CorruptPaxKey))
-    );
-  }*/
 
   #[test]
   fn test_parser_error_bad_value() {

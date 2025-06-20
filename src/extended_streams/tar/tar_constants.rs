@@ -3,7 +3,7 @@ use core::str::Utf8Error;
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::extended_streams::tar::{FilePermissions, SparseFileInstruction};
+use crate::extended_streams::tar::{FilePermissions, SparseFileInstruction, TimeStamp};
 
 // --- Constants for the TAR Header Format ---
 pub const BLOCK_SIZE: usize = 512;
@@ -208,8 +208,11 @@ impl V7Header {
     parse_octal(&self.size).map(|size| size as u32)
   }
 
-  pub fn parse_mtime(&self) -> Result<u64, ParseOctalError> {
-    parse_octal(&self.mtime)
+  pub fn parse_mtime(&self) -> Result<TimeStamp, ParseOctalError> {
+    parse_octal(&self.mtime).map(|mtime| TimeStamp {
+      seconds_since_epoch: mtime,
+      nanoseconds: 0,
+    })
   }
 
   /// Computes the checksum of a TAR header according to the ustar spec.
@@ -337,12 +340,18 @@ pub(crate) struct GnuHeaderAdditions {
 }
 
 impl GnuHeaderAdditions {
-  pub fn parse_atime(&self) -> Result<u64, ParseOctalError> {
-    parse_octal(&self.atime)
+  pub fn parse_atime(&self) -> Result<TimeStamp, ParseOctalError> {
+    parse_octal(&self.atime).map(|atime| TimeStamp {
+      seconds_since_epoch: atime,
+      nanoseconds: 0,
+    })
   }
 
-  pub fn parse_ctime(&self) -> Result<u64, ParseOctalError> {
-    parse_octal(&self.ctime)
+  pub fn parse_ctime(&self) -> Result<TimeStamp, ParseOctalError> {
+    parse_octal(&self.ctime).map(|ctime| TimeStamp {
+      seconds_since_epoch: ctime,
+      nanoseconds: 0,
+    })
   }
 
   pub fn parse_offset(&self) -> Result<u64, ParseOctalError> {
@@ -475,6 +484,8 @@ pub mod pax_keys_well_known {
   /// Overrides the linkname of the header.
   pub const LINKPATH: &str = "linkpath";
   pub const MTIME: &str = "mtime";
+  /// Non-standard GNU extension.
+  pub const CTIME: &str = "ctime";
   /// Overrides the `name` and `prefix` fields of the header.
   pub const PATH: &str = "path";
   /// Overrides the size of the header.

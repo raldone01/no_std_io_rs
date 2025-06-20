@@ -22,7 +22,7 @@ use crate::{
       UstarHeaderAdditions, V7Header, BLOCK_SIZE, TAR_ZERO_HEADER,
     },
     BlockDeviceEntry, CharacterDeviceEntry, FileData, FileEntry, FilePermissions, HardLinkEntry,
-    RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry, TarInode,
+    RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry, TarInode, TimeStamp,
   },
   BufferedRead as _, Write, WriteAll as _,
 };
@@ -303,7 +303,7 @@ pub(crate) struct InodeBuilder {
   pub(crate) mode: Option<FilePermissions>,
   pub(crate) uid: InodeConfidentValue<u32>,
   pub(crate) gid: InodeConfidentValue<u32>,
-  pub(crate) mtime: InodeConfidentValue<u64>,
+  pub(crate) mtime: InodeConfidentValue<TimeStamp>,
   pub(crate) uname: InodeConfidentValue<String>,
   pub(crate) gname: InodeConfidentValue<String>,
   pub(crate) link_target: InodeConfidentValue<String>,
@@ -416,7 +416,7 @@ impl TarParser {
         .unwrap_or_else(|| FilePermissions::default()),
       uid: inode_builder.uid.get().cloned().unwrap_or(0),
       gid: inode_builder.gid.get().cloned().unwrap_or(0),
-      mtime: inode_builder.mtime.get().cloned().unwrap_or(0),
+      mtime: inode_builder.mtime.get().cloned().unwrap_or_default(),
       uname: inode_builder.uname.get().cloned().unwrap_or_default(),
       gname: inode_builder.gname.get().cloned().unwrap_or_default(),
       unparsed_extended_attributes: self.pax_parser.drain_local_unparsed_attributes(),
@@ -906,11 +906,16 @@ impl TarParser {
   ) -> Result<TarParserState, TarParserError> {
     // incrementally read the PAX data
     let bytes_to_read = state.remaining_data.min(reader.remaining());
+    let debug_str = str::from_utf8(reader.peek_exact(80).unwrap()).unwrap();
     let pax_bytes = reader
       .peek_exact(bytes_to_read)
       .expect("BUG: Incremental PAX data reading failed");
 
+    // make this non-fatal just audit log it
     let bytes_read = self.pax_parser.write(pax_bytes, false)?;
+    reader
+      .skip(bytes_read)
+      .expect("BUG: Incremental PAX data reading failed");
 
     let remaining_data = state.remaining_data - bytes_read;
     Ok(if remaining_data == 0 {
