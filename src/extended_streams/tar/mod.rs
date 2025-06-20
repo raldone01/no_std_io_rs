@@ -11,4 +11,5 @@ pub use tar_inode::*;
 //mod tar_test;
 
 mod confident_value;
+mod gnu_sparse_1_0_parser;
 mod pax_parser;

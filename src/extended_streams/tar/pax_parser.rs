@@ -477,13 +477,15 @@ impl PaxParser {
       false,
     );
     match copy_buffered_until_result {
-      Ok(_) => {},
-      Err(CopyUntilError::DelimiterNotFound { bytes_read }) => {},
+      Ok(_) | Err(CopyUntilError::DelimiterNotFound { .. }) => {},
+      Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
       Err(
-        CopyUntilError::IoRead(..) | CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. }),
-      ) => panic!("BUG: Infallible error in read operation"),
-      Err(CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. }))) => {
-        return Ok(PaxParserState::ParsingNewKV(state))
+        CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
+        | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
+      ) => {
+        return Err(TarParserError::CorruptPaxLength {
+          max_length_field_length: state.kv_cursor.full_buffer().len(),
+        })
       },
     }
 
@@ -491,11 +493,7 @@ impl PaxParser {
     let length_str = core::str::from_utf8(state.kv_cursor.before()).unwrap_or("0");
     let length = match length_str.parse::<usize>() {
       Ok(value) => value,
-      Err(_) => {
-        return Err(TarParserError::CorruptPaxLength {
-          max_length_field_length: state.kv_cursor.full_buffer().len(),
-        })
-      },
+      Err(e) => return Err(TarParserError::CorruptPaxLengthInteger(e)),
     };
 
     let length = length.saturating_sub(state.kv_cursor.before().len() + 1);
@@ -623,6 +621,8 @@ impl Write for PaxParser {
 
 #[cfg(test)]
 mod tests {
+  use core::num::ParseIntError;
+
   use super::*;
 
   use alloc::{string::ToString as _, vec};
@@ -714,12 +714,12 @@ mod tests {
   fn test_parser_error_bad_length() {
     let mut parser = PaxParser::default();
     let data = b"abc path=foo\n";
-    assert_eq!(
+    assert!(matches!(
       parser.write_all(data, false),
-      Err(WriteAllError::Io(TarParserError::CorruptPaxLength {
-        max_length_field_length: 20,
-      }))
-    );
+      Err(WriteAllError::Io(TarParserError::CorruptPaxLengthInteger(
+        ParseIntError { .. }
+      )))
+    ));
   }
 
   /*#[test] This should just end up in the audit log

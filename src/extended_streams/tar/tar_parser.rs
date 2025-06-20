@@ -1,4 +1,4 @@
-use core::convert::Infallible;
+use core::{convert::Infallible, num::ParseIntError};
 
 use alloc::{
   string::{String, ToString as _},
@@ -14,6 +14,7 @@ use crate::{
   core_streams::Cursor,
   extended_streams::tar::{
     confident_value::ConfidentValue,
+    gnu_sparse_1_0_parser::GnuSparse1_0Parser,
     pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
@@ -26,6 +27,7 @@ use crate::{
   BufferedRead as _, Write, WriteAll as _,
 };
 
+/// TODO: unify and cleanup
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum TarParserError {
   #[error("Corrupt header: Checksum error: {0}")]
@@ -36,10 +38,22 @@ pub enum TarParserError {
     "Corrupt pax length field: The length field is longer than {max_length_field_length} bytes"
   )]
   CorruptPaxLength { max_length_field_length: usize },
+  #[error("Corrupt pax length field: {0}")]
+  CorruptPaxLengthInteger(ParseIntError),
   #[error("Corrupt pax key")]
   CorruptPaxKey,
   #[error("Corrupt pax value")]
   CorruptPaxValue,
+  #[error("Corrupt gnu sparse 1.0 maps: The number of maps field is longer than {max_number_of_maps_field_length} bytes")]
+  CorruptGnuSparse1_0NumberOfMaps {
+    max_number_of_maps_field_length: usize,
+  },
+  #[error("Corrupt gnu sparse 1.0 maps: The number of maps field is invalid: {0}")]
+  CorruptGnuSparse1_0NumberOfMapsInteger(ParseIntError),
+  #[error("Corrupt gnu sparse 1.0 map entry: The entry length field is longer than {max_value_field_length} bytes")]
+  CorruptGnuSparse1_0MapEntryLength { max_value_field_length: usize },
+  #[error("Corrupt gnu sparse 1.0 map entry: The entry length field is invalid: {0}")]
+  CorruptGnuSparse1_0MapEntryInteger(ParseIntError),
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -210,9 +224,10 @@ struct StateParsingPaxData {
 
 struct StateParsingGnuSparse1_0 {
   /// The amount of data that is still remaining to be read.
-  remaining_data: usize,
+  data_after_header: usize,
   /// The amount of padding after the file data.
   padding_after: usize,
+  sparse_parser: GnuSparse1_0Parser,
 }
 
 enum TarParserState {
@@ -399,8 +414,9 @@ impl TarParser {
   ) -> TarParserState {
     if self.inode_state.sparse_format == Some(SparseFormat::Gnu1_0) {
       TarParserState::ParsingGnuSparse1_0(StateParsingGnuSparse1_0 {
-        remaining_data: data_after_header,
+        data_after_header,
         padding_after: padding_after_data,
+        sparse_parser: GnuSparse1_0Parser::default(),
       })
     } else {
       TarParserState::ReadingFileData(StateReadingFileData {
@@ -830,6 +846,27 @@ impl TarParser {
       TarParserState::ParsingPaxData(state)
     })
   }
+
+  fn state_parsing_gnu_sparse_1_0(
+    &mut self,
+    reader: &mut Cursor<&[u8]>,
+    mut state: StateParsingGnuSparse1_0,
+  ) -> Result<TarParserState, TarParserError> {
+    let done = state
+      .sparse_parser
+      .parse(reader, &mut self.inode_state.sparse_file_instructions)?;
+
+    if !done {
+      // We still have some data to read, so we keep the parser state.
+      return Ok(TarParserState::ParsingGnuSparse1_0(state));
+    }
+
+    // We are done reading the sparse data
+    Ok(TarParserState::ReadingFileData(StateReadingFileData {
+      remaining_data: state.data_after_header - state.sparse_parser.bytes_read,
+      padding_after: state.padding_after,
+    }))
+  }
 }
 
 impl Write for TarParser {
@@ -838,6 +875,7 @@ impl Write for TarParser {
 
   fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
     // TODO: add loop here?
+    // TODO: update this and pax parser to avoid moving the state through the parsing process
     let mut reader = Cursor::new(input_buffer);
 
     let parser_state = core::mem::replace(&mut self.parser_state, TarParserState::NoNextStateSet);
@@ -854,14 +892,14 @@ impl Write for TarParser {
         self.state_expecting_old_gnu_sparse_extended_header(&mut reader, state)?
       },
       TarParserState::ParsingPaxData(state) => self.state_parsing_pax_data(&mut reader, state)?,
-      TarParserState::NoNextStateSet => {
-        panic!("BUG: No next state set in TarParser");
-      },
       TarParserState::ParsingGnuSparse1_0(state) => {
-        todo!()
+        self.state_parsing_gnu_sparse_1_0(&mut reader, state)?
       },
       TarParserState::ReadingFileData(state) => {
         todo!()
+      },
+      TarParserState::NoNextStateSet => {
+        panic!("BUG: No next state set in TarParser");
       },
     };
     self.parser_state = next_state;
