@@ -205,8 +205,9 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
       },
     }
 
+    // TODO: use enums instead of context strings??? but they would need display!
     // Convert the offset or size bytes to a u64
-    let value_str = core::str::from_utf8(state.value_string_cursor.before()).unwrap_or("0");
+    let value_str = core::str::from_utf8(state.value_string_cursor.before()).unwrap_or("0"); // TODO: handle invalid utf8 here and elsewhere
     let value = value_str
       .parse::<u64>()
       .map_err(Self::map_corrupt_field("sparse map entry value"))?;

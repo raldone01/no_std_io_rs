@@ -188,8 +188,6 @@ impl<R: BufferedRead + ?Sized> CopyBuffered for R {}
 
 #[cfg(test)]
 mod tests {
-  use crate::{BytewiseReader, BytewiseWriter};
-
   use super::*;
 
   use alloc::vec::Vec;
