@@ -149,11 +149,11 @@ pub trait WriteLimited: Write {
   ///
   /// Returns a new [`LimitedWriter`] instance.
   #[must_use]
-  fn put(&mut self, write_limit_bytes: usize) -> LimitedWriter<'_, Self>;
+  fn put(&mut self, write_limit_bytes: usize) -> LimitedWriter<&mut Self>;
 }
 
 impl<W: Write + ?Sized> WriteLimited for W {
-  fn put(&mut self, write_limit_bytes: usize) -> LimitedWriter<'_, Self> {
+  fn put(&mut self, write_limit_bytes: usize) -> LimitedWriter<&mut Self> {
     LimitedWriter::new(self, write_limit_bytes)
   }
 }

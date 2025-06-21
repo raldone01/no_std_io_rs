@@ -1,9 +1,12 @@
 use core::str::Utf8Error;
 
+use alloc::string::String;
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::extended_streams::tar::{FilePermissions, SparseFileInstruction, TimeStamp};
+use crate::extended_streams::tar::{
+  CommonParseError, FilePermissions, SparseFileInstruction, TimeStamp,
+};
 
 // --- Constants for the TAR Header Format ---
 pub const BLOCK_SIZE: usize = 512;
@@ -147,12 +150,12 @@ pub(crate) fn find_null_terminator_index(bytes: &[u8]) -> usize {
     .unwrap_or(bytes.len())
 }
 
-pub fn parse_null_terminated_string(bytes: &[u8]) -> Result<&str, Utf8Error> {
+pub fn parse_null_terminated_str(bytes: &[u8]) -> Result<&str, Utf8Error> {
   let end = find_null_terminator_index(bytes);
   str::from_utf8(&bytes[..end])
 }
 
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ParseOctalError {
   #[error("Invalid UTF-8 in octal string: {0}")]
   InvalidUtf8(#[from] Utf8Error),
@@ -162,7 +165,7 @@ pub enum ParseOctalError {
 
 /// Parses a null-terminated, space-padded octal number from a byte slice.
 fn parse_octal(bytes: &[u8]) -> Result<u64, ParseOctalError> {
-  let s = parse_null_terminated_string(&bytes).map_err(|err| ParseOctalError::InvalidUtf8(err))?;
+  let s = parse_null_terminated_str(&bytes).map_err(|err| ParseOctalError::InvalidUtf8(err))?;
   u64::from_str_radix(s.trim(), 8).map_err(|err| ParseOctalError::ParseIntError(err))
 }
 
@@ -210,12 +213,12 @@ impl V7Header {
   /// Used by the GNU format.
   pub const MAGIC_VERSION_GNU: &[u8; 8] = b"ustar  \0";
 
-  pub fn parse_name(&self) -> Result<&str, Utf8Error> {
-    parse_null_terminated_string(&self.name_bytes)
+  pub fn parse_name(&self) -> Result<String, Utf8Error> {
+    parse_null_terminated_str(&self.name_bytes).map(String::from)
   }
 
   #[must_use]
-  pub fn parse_mode(&self) -> Option<FilePermissions> {
+  pub fn parse_mode(&self) -> Result<FilePermissions, CommonParseError> {
     FilePermissions::parse_octal_ascii_unix_mode(&self.mode)
   }
 
@@ -227,8 +230,8 @@ impl V7Header {
     parse_octal(&self.gid).map(|gid| gid as u32)
   }
 
-  pub fn parse_size(&self) -> Result<u32, ParseOctalError> {
-    parse_octal(&self.size).map(|size| size as u32)
+  pub fn parse_size(&self) -> Result<usize, ParseOctalError> {
+    parse_octal(&self.size).map(|size| size as usize)
   }
 
   pub fn parse_mtime(&self) -> Result<TimeStamp, ParseOctalError> {
@@ -278,15 +281,15 @@ impl V7Header {
   }
 
   pub fn parse_linkname(&self) -> Result<&str, Utf8Error> {
-    parse_null_terminated_string(&self.linkname)
+    parse_null_terminated_str(&self.linkname)
   }
 }
 
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum TarHeaderChecksumError {
-  #[error("Corrupt header: Invalid checksum expected {expected:?} but got {actual:?}")]
+  #[error("Invalid checksum expected {expected} but got {actual}")]
   WrongChecksum { expected: u32, actual: u32 },
-  #[error("Failed to parse octal number from checksum field: {0}")]
+  #[error("Failed to parse checksum field: {0}")]
   ParseOctalError(#[from] ParseOctalError),
 }
 
@@ -308,10 +311,10 @@ pub struct CommonHeaderAdditions {
 
 impl CommonHeaderAdditions {
   pub fn parse_uname(&self) -> Result<&str, Utf8Error> {
-    parse_null_terminated_string(&self.uname)
+    parse_null_terminated_str(&self.uname)
   }
   pub fn parse_gname(&self) -> Result<&str, Utf8Error> {
-    parse_null_terminated_string(&self.gname)
+    parse_null_terminated_str(&self.gname)
   }
   pub fn parse_dev_major(&self) -> Result<u32, ParseOctalError> {
     parse_octal(&self.dev_major).map(|v| v as u32)
@@ -332,7 +335,7 @@ pub struct UstarHeaderAdditions {
 
 impl UstarHeaderAdditions {
   pub fn parse_prefix(&self) -> Result<&str, Utf8Error> {
-    parse_null_terminated_string(&self.prefix)
+    parse_null_terminated_str(&self.prefix)
   }
 }
 

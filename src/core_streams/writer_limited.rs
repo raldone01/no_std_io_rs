@@ -4,16 +4,16 @@ use crate::Write;
 
 /// A writer that only writes up to a specified limit.
 /// This is useful when handling user input to prevent resource exhaustion attacks.
-pub struct LimitedWriter<'a, W: Write + ?Sized> {
-  source_writer: &'a mut W,
+pub struct LimitedWriter<W: Write> {
+  source_writer: W,
   write_limit_bytes: usize,
   bytes_written: usize,
 }
 
-impl<'a, W: Write + ?Sized> LimitedWriter<'a, W> {
+impl<W: Write> LimitedWriter<W> {
   /// Creates a new `LimitedWriter` with the specified limit.
   #[must_use]
-  pub fn new(source_writer: &'a mut W, write_limit_bytes: usize) -> Self {
+  pub fn new(source_writer: W, write_limit_bytes: usize) -> Self {
     Self {
       source_writer,
       write_limit_bytes,
@@ -36,7 +36,7 @@ pub enum LimitedWriterWriteError<U> {
   UnderlyingWriteError(#[from] U),
 }
 
-impl<'a, W: Write + ?Sized> Write for LimitedWriter<'a, W> {
+impl<W: Write> Write for LimitedWriter<W> {
   type WriteError = LimitedWriterWriteError<W::WriteError>;
   type FlushError = W::FlushError;
 

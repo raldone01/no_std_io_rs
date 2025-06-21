@@ -2,6 +2,8 @@ use alloc::{string::String, vec::Vec};
 
 use hashbrown::HashMap;
 
+use crate::extended_streams::tar::CommonParseError;
+
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct TimeStamp {
   pub seconds_since_epoch: u64,
@@ -70,9 +72,9 @@ impl Default for FilePermissions {
 impl FilePermissions {
   /// Parses an octal ASCII string representing Unix file permissions as found in the `mode` field of a tar header.
   /// The input is expected to be &[u8; 12].
-  pub fn parse_octal_ascii_unix_mode(octal_bytes: &[u8]) -> Option<Self> {
-    let mode_str = str::from_utf8(&octal_bytes).ok()?;
-    let mode = u32::from_str_radix(mode_str, 8).ok()?;
+  pub fn parse_octal_ascii_unix_mode(octal_bytes: &[u8]) -> Result<Self, CommonParseError> {
+    let mode_str = str::from_utf8(&octal_bytes)?;
+    let mode = u32::from_str_radix(mode_str, 8)?;
 
     // Extract permission bits
     let owner = Permission {
@@ -96,7 +98,7 @@ impl FilePermissions {
     let set_gid = mode & 0o2000 != 0;
     let sticky = mode & 0o1000 != 0;
 
-    Some(FilePermissions {
+    Ok(FilePermissions {
       owner,
       group,
       other,

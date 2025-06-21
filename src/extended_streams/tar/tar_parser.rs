@@ -1,4 +1,4 @@
-use core::{convert::Infallible, num::ParseIntError};
+use core::{convert::Infallible, num::ParseIntError, str::Utf8Error};
 
 use alloc::{
   format,
@@ -14,46 +14,63 @@ use crate::{
   core_streams::Cursor,
   extended_streams::tar::{
     confident_value::ConfidentValue,
-    gnu_sparse_1_0_parser::GnuSparse1_0Parser,
-    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
+    gnu_sparse_1_0_parser::{
+      GnuSparse1_0Parser, GnuSparse1_0ParserError, GnuSparse1_0ParserLimits,
+    },
+    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser, PaxParserError},
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
       GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
       UstarHeaderAdditions, V7Header, BLOCK_SIZE, TAR_ZERO_HEADER,
     },
     BlockDeviceEntry, CharacterDeviceEntry, FileData, FileEntry, FilePermissions, HardLinkEntry,
-    RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry, TarInode, TimeStamp,
+    IgnoreTarViolationHandler, RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry,
+    TarInode, TarViolationHandler, TimeStamp,
   },
   BufferedRead as _, Write, WriteAll as _,
 };
 
-/// TODO: unify and cleanup
-#[derive(Error, Debug, PartialEq, Eq)]
-pub enum TarParserError {
-  #[error("Corrupt header: Checksum error: {0}")]
+pub struct TarParserLimits {
+  gnu_sparse_1_0_limits: GnuSparse1_0ParserLimits,
+}
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum CommonParseError {
+  #[error("Invalid octal number: {0}")]
+  InvalidOctalNumber(#[from] ParseOctalError),
+  #[error("Invalid UTF-8 string: {0}")]
+  InvalidUtf8String(#[from] Utf8Error),
+  #[error("Invalid integer: {0}")]
+  InvalidInteger(#[from] ParseIntError),
+}
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum TarHeaderParserError {
+  #[error("Unknown magic+version: {magic:?}+{version:?}")]
+  UnknownHeaderMagicVersion { magic: [u8; 6], version: [u8; 2] },
+  #[error("Checksum error: {0}")]
   CorruptHeaderChecksum(#[from] TarHeaderChecksumError),
-  #[error("Corrupt header: Unknown magic or version: {magic:?} {version:?}")]
-  CorruptHeaderMagicVersion { magic: [u8; 6], version: [u8; 2] },
-  #[error(
-    "Corrupt pax length field: The length field is longer than {max_length_field_length} bytes"
-  )]
-  CorruptPaxLength { max_length_field_length: usize },
-  #[error("Corrupt pax length field: {0}")]
-  CorruptPaxLengthInteger(ParseIntError),
-  #[error("Corrupt pax key")]
-  CorruptPaxKey,
-  #[error("Corrupt pax value")]
-  CorruptPaxValue,
-  #[error("Corrupt gnu sparse 1.0 maps: The number of maps field is longer than {max_number_of_maps_field_length} bytes")]
-  CorruptGnuSparse1_0NumberOfMaps {
-    max_number_of_maps_field_length: usize,
+  #[error("Parsing field {field} failed: {error}")]
+  CorruptHeaderField {
+    field: &'static str,
+    error: CommonParseError,
   },
-  #[error("Corrupt gnu sparse 1.0 maps: The number of maps field is invalid: {0}")]
-  CorruptGnuSparse1_0NumberOfMapsInteger(ParseIntError),
-  #[error("Corrupt gnu sparse 1.0 map entry: The entry length field is longer than {max_value_field_length} bytes")]
-  CorruptGnuSparse1_0MapEntryLength { max_value_field_length: usize },
-  #[error("Corrupt gnu sparse 1.0 map entry: The entry length field is invalid: {0}")]
-  CorruptGnuSparse1_0MapEntryInteger(ParseIntError),
+}
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum TarParserError {
+  #[error("Tar header parser error: {0}")]
+  HeaderParserError(#[from] TarHeaderParserError),
+  #[error("Pax parser error: {0}")]
+  PaxParserError(#[from] PaxParserError),
+  #[error("Gnu sparse 1.0 parser error: {0}")]
+  GnuSparse1_0ParserError(#[from] GnuSparse1_0ParserError),
+  #[error("Limit of {limit} {unit} exceeded while parsing: {context}")]
+  LimitExceeded {
+    limit: usize,
+    unit: &'static str,
+    context: &'static str,
+  },
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -232,7 +249,7 @@ impl Default for TarParserState {
   }
 }
 
-pub struct TarParser {
+pub struct TarParser<ViolationHandler: TarViolationHandler = IgnoreTarViolationHandler> {
   /// The extracted files.
   extracted_files: Vec<TarInode>,
 
@@ -249,6 +266,8 @@ pub struct TarParser {
   pax_parser: PaxParser,
   // Must be reset after each file:
   inode_state: InodeBuilder,
+
+  violation_handler: ViolationHandler,
 }
 
 pub(crate) fn buffer_array<'a, const BUFFER_SIZE: usize>(
@@ -300,7 +319,7 @@ impl<T: Clone> From<PaxConfidentValue<T>> for InodeConfidentValue<T> {
 #[derive(Default)]
 pub(crate) struct InodeBuilder {
   pub(crate) file_path: InodeConfidentValue<String>,
-  pub(crate) mode: Option<FilePermissions>,
+  pub(crate) mode: InodeConfidentValue<FilePermissions>,
   pub(crate) uid: InodeConfidentValue<u32>,
   pub(crate) gid: InodeConfidentValue<u32>,
   pub(crate) mtime: InodeConfidentValue<TimeStamp>,
@@ -336,8 +355,14 @@ impl From<InodeBuilder> for RegularFileEntry {
   }
 }
 
-impl TarParser {
-  pub fn new(options: TarParserOptions) -> Self {
+impl<VH: TarViolationHandler + Default> Default for TarParser<VH> {
+  fn default() -> Self {
+    Self::new(TarParserOptions::default(), VH::default())
+  }
+}
+
+impl<VH: TarViolationHandler> TarParser<VH> {
+  pub fn new(options: TarParserOptions, violation_handler: VH) -> Self {
     Self {
       extracted_files: Default::default(),
 
@@ -348,6 +373,8 @@ impl TarParser {
       parser_state: Default::default(),
       pax_parser: PaxParser::new(options.initial_global_extended_attributes),
       inode_state: Default::default(),
+
+      violation_handler,
     }
   }
 
@@ -414,7 +441,8 @@ impl TarParser {
       entry: FileEntry::Fifo,
       mode: inode_builder
         .mode
-        .clone()
+        .get()
+        .map(Clone::clone)
         .unwrap_or_else(|| FilePermissions::default()),
       uid: inode_builder.uid.get().cloned().unwrap_or(0),
       gid: inode_builder.gid.get().cloned().unwrap_or(0),
@@ -489,6 +517,160 @@ impl TarParser {
     }
   }
 
+  /// Handles a potential violation by calling the violation handler.
+  fn hpv<T, E: Into<TarParserError>>(
+    violation_handler: &mut VH,
+    operation_result: Result<T, E>,
+  ) -> Result<Option<T>, TarParserError> {
+    match operation_result {
+      Ok(v) => Ok(Some(v)),
+      Err(e) => violation_handler.handle(e.into()).map(|_| None),
+    }
+  }
+
+  #[must_use]
+  fn map_corrupt_header_field<T: Into<CommonParseError>>(
+    field: &'static str,
+  ) -> impl FnOnce(T) -> TarHeaderParserError {
+    move |error| TarHeaderParserError::CorruptHeaderField {
+      field,
+      error: error.into(),
+    }
+  }
+
+  fn parse_v7_header(&mut self, old_header: &V7Header) -> Result<TarTypeFlag, TarParserError> {
+    let vh = &mut self.violation_handler;
+
+    // verify checksum
+    Self::hpv(
+      vh,
+      old_header
+        .verify_checksum()
+        .map_err(TarHeaderParserError::CorruptHeaderChecksum),
+    )?;
+
+    let typeflag = old_header.parse_typeflag();
+    if let Some(count) = self.found_type_flags.get_mut(&typeflag) {
+      *count += 1;
+    } else {
+      self.found_type_flags.insert(typeflag.clone(), 1);
+    }
+
+    // parse the information from the old header
+    Self::hpv(
+      vh,
+      self
+        .inode_state
+        .data_after_header_size
+        .try_get_or_set_with(TarConfidence::V7, || old_header.parse_size())
+        .map_err(Self::map_corrupt_header_field("size")),
+    )?;
+
+    if typeflag.is_file_like() {
+      Self::hpv(
+        vh,
+        self
+          .inode_state
+          .file_path
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_name())
+          .map_err(Self::map_corrupt_header_field("name")),
+      )?;
+      Self::hpv(
+        vh,
+        self
+          .inode_state
+          .mode
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_mode())
+          .map_err(Self::map_corrupt_header_field("mode")),
+      )?;
+      Self::hpv(
+        vh,
+        self
+          .inode_state
+          .uid
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_uid())
+          .map_err(Self::map_corrupt_header_field("uid")),
+      )?;
+      Self::hpv(
+        vh,
+        self
+          .inode_state
+          .gid
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_gid())
+          .map_err(Self::map_corrupt_header_field("gid")),
+      )?;
+
+      Self::hpv(
+        vh,
+        self
+          .inode_state
+          .mtime
+          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_mtime())
+          .map_err(Self::map_corrupt_header_field("mtime")),
+      )?;
+    }
+
+    if typeflag.is_link_like() {
+      Self::hpv(
+        vh,
+        self
+          .inode_state
+          .link_target
+          .try_get_or_set_with(TarConfidence::V7, || {
+            old_header.parse_linkname().map(String::from)
+          })
+          .map_err(Self::map_corrupt_header_field("linkname")),
+      )?;
+    }
+
+    Ok(typeflag)
+  }
+
+  fn parse_common_header_additions(
+    &mut self,
+    common_header_additions: &CommonHeaderAdditions,
+  ) -> Result<(), TarParserError> {
+    let vh = &mut self.violation_handler;
+
+    Self::hpv(
+      vh,
+      self
+        .inode_state
+        .uname
+        .try_get_or_set_with(TarConfidence::Ustar, || {
+          common_header_additions.parse_uname().map(String::from)
+        })
+        .map_err(Self::map_corrupt_header_field("uname")),
+    )?;
+    Self::hpv(
+      vh,
+      self
+        .inode_state
+        .gname
+        .try_get_or_set_with(TarConfidence::Ustar, || {
+          common_header_additions.parse_gname().map(String::from)
+        })
+        .map_err(Self::map_corrupt_header_field("gname")),
+    )?;
+    if let Some(dev_major) = Self::hpv(
+      vh,
+      common_header_additions
+        .parse_dev_major()
+        .map_err(Self::map_corrupt_header_field("dev_major")),
+    )? {
+      self.inode_state.dev_major = dev_major;
+    }
+    if let Some(dev_minor) = Self::hpv(
+      vh,
+      common_header_additions
+        .parse_dev_minor()
+        .map_err(Self::map_corrupt_header_field("dev_minor")),
+    )? {
+      self.inode_state.dev_minor = dev_minor;
+    }
+    Ok(())
+  }
+
   fn state_reading_tar_header(
     &mut self,
     reader: &mut Cursor<&[u8]>,
@@ -498,6 +680,8 @@ impl TarParser {
     let mut typeflag = TarTypeFlag::UnknownTypeFlag(255);
     let mut old_gnu_sparse_is_extended = false;
 
+    // TODO: fix strict mode recovery is not possible because we consume the buffer here.
+    // We should wait to consume the buffer until we have fully parsed the header.
     let header_buffer = match buffer_array(reader, &mut state.temp_tar_header_buffer)? {
       Some(buffer) => buffer,
       None => {
@@ -515,101 +699,25 @@ impl TarParser {
     let old_header =
       V7Header::ref_from_bytes(&header_buffer).expect("BUG: Not enough bytes for OldHeader");
 
-    let mut parse_v7_header = || -> Result<(), TarParserError> {
-      // verify checksum
-      old_header
-        .verify_checksum()
-        .map_err(TarParserError::CorruptHeaderChecksum)?;
-
-      typeflag = old_header.parse_typeflag();
-      if let Some(count) = self.found_type_flags.get_mut(&typeflag) {
-        *count += 1;
-      } else {
-        self.found_type_flags.insert(typeflag.clone(), 1);
-      }
-
-      // parse the information from the old header
-      let _ = self
-        .inode_state
-        .data_after_header_size
-        .try_get_or_set_with(TarConfidence::V7, || {
-          old_header.parse_size().map(|s| s as usize)
-        });
-
-      if typeflag.is_file_like() {
-        let _ = self
-          .inode_state
-          .file_path
-          .try_get_or_set_with(TarConfidence::V7, || {
-            old_header.parse_name().map(String::from)
-          });
-        self
-          .inode_state
-          .mode
-          .get_or_insert_with_option(|| old_header.parse_mode());
-        let _ = self
-          .inode_state
-          .uid
-          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_uid());
-        let _ = self
-          .inode_state
-          .gid
-          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_gid());
-
-        let _ = self
-          .inode_state
-          .mtime
-          .try_get_or_set_with(TarConfidence::V7, || old_header.parse_mtime());
-      }
-
-      if typeflag.is_link_like() {
-        let _ = self
-          .inode_state
-          .link_target
-          .try_get_or_set_with(TarConfidence::V7, || {
-            old_header.parse_linkname().map(String::from)
-          });
-      }
-
-      Ok(())
-    };
-
-    let mut parse_common_header_additions =
-      |common_header_additions: &CommonHeaderAdditions| -> Result<(), TarParserError> {
-        let _ = self
-          .inode_state
-          .uname
-          .try_get_or_set_with(TarConfidence::Ustar, || {
-            common_header_additions.parse_uname().map(String::from)
-          });
-        let _ = self
-          .inode_state
-          .gname
-          .try_get_or_set_with(TarConfidence::Ustar, || {
-            common_header_additions.parse_gname().map(String::from)
-          });
-        self.inode_state.dev_major = common_header_additions.parse_dev_major().unwrap_or(0);
-        self.inode_state.dev_minor = common_header_additions.parse_dev_minor().unwrap_or(0);
-        Ok(())
-      };
-
     // This parses all fields in a header block regardless of the typeflag.
     // There is some room for improving allocations/parsing based on the typeflag.
     match &old_header.magic_version {
       V7Header::MAGIC_VERSION_V7 => {
-        parse_v7_header()?;
+        typeflag = self.parse_v7_header(old_header)?;
         // Done v7 header parsing.
       },
       V7Header::MAGIC_VERSION_USTAR => {
-        parse_v7_header()?;
+        typeflag = self.parse_v7_header(old_header)?;
 
         if typeflag.is_file_like() {
           let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
             .expect("BUG: Not enough bytes for CommonHeaderAdditions in USTAR");
-          parse_common_header_additions(common_header_additions)?;
+          self.parse_common_header_additions(common_header_additions)?;
           let ustar_additions =
             UstarHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
               .expect("BUG: Not enough bytes for UstarHeaderAdditions");
+
+          let vh = &mut self.violation_handler;
 
           // If there is already a path with a confidence of USTAR or less, we want to prefix the path with the ustar prefix.
           // If there is no path, we want to use the ustar prefix as the path.
@@ -628,39 +736,59 @@ impl TarParser {
                   format!("{}/{}", prefix, potential_path)
                 }
               },
-              Err(_) => potential_path,
+              Err(parse_error) => {
+                Self::hpv(
+                  vh,
+                  Result::<(), _>::Err(Self::map_corrupt_header_field("prefix")(parse_error)),
+                )?;
+                potential_path
+              },
             };
             self.inode_state.file_path.set(TarConfidence::Ustar, joined);
           } else {
-            let _ = self
-              .inode_state
-              .file_path
-              .try_get_or_set_with(TarConfidence::Ustar, || {
-                ustar_additions.parse_prefix().map(String::from)
-              });
+            Self::hpv(
+              vh,
+              self
+                .inode_state
+                .file_path
+                .try_get_or_set_with(TarConfidence::Ustar, || {
+                  ustar_additions.parse_prefix().map(String::from)
+                })
+                .map_err(Self::map_corrupt_header_field("prefix")),
+            )?;
           }
         }
 
         // Done ustar header parsing.
       },
       V7Header::MAGIC_VERSION_GNU => {
-        parse_v7_header()?;
+        typeflag = self.parse_v7_header(old_header)?;
 
         let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
           .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
-        parse_common_header_additions(common_header_additions)?;
+        self.parse_common_header_additions(common_header_additions)?;
         let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
           .expect("BUG: Not enough bytes for GnuHeaderAdditions");
 
+        let vh = &mut self.violation_handler;
+
         if typeflag.is_file_like() {
-          let _ = self
-            .inode_state
-            .atime
-            .try_get_or_set_with(TarConfidence::Gnu, || gnu_additions.parse_atime());
-          let _ = self
-            .inode_state
-            .ctime
-            .try_get_or_set_with(TarConfidence::Gnu, || gnu_additions.parse_ctime());
+          Self::hpv(
+            vh,
+            self
+              .inode_state
+              .atime
+              .try_get_or_set_with(TarConfidence::Gnu, || gnu_additions.parse_atime())
+              .map_err(Self::map_corrupt_header_field("atime")),
+          )?;
+          Self::hpv(
+            vh,
+            self
+              .inode_state
+              .ctime
+              .try_get_or_set_with(TarConfidence::Gnu, || gnu_additions.parse_ctime())
+              .map_err(Self::map_corrupt_header_field("ctime")),
+          )?;
         }
 
         // Handle sparse entries (Old GNU Format)
@@ -670,20 +798,27 @@ impl TarParser {
           old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
         }
 
-        let _ = self
-          .inode_state
-          .sparse_real_size
-          .try_get_or_set_with(TarConfidence::Gnu, || {
-            gnu_additions.parse_real_size().map(|s| s as usize)
-          });
+        Self::hpv(
+          vh,
+          self
+            .inode_state
+            .sparse_real_size
+            .try_get_or_set_with(TarConfidence::Gnu, || {
+              gnu_additions.parse_real_size().map(|s| s as usize)
+            })
+            .map_err(Self::map_corrupt_header_field("real_size")),
+        )?;
 
         // Done GNU header parsing.
       },
       unknown_version_magic => {
-        return Err(TarParserError::CorruptHeaderMagicVersion {
-          magic: unknown_version_magic[..6].try_into().unwrap(),
-          version: unknown_version_magic[6..].try_into().unwrap(),
-        });
+        return Err(
+          TarHeaderParserError::UnknownHeaderMagicVersion {
+            magic: unknown_version_magic[..6].try_into().unwrap(),
+            version: unknown_version_magic[6..].try_into().unwrap(),
+          }
+          .into(),
+        );
       },
     }
     // We parsed everything from the header block and released the buffer.
@@ -894,6 +1029,7 @@ impl TarParser {
   ) -> Result<TarParserState, TarParserError> {
     // We must read the next block to get more sparse headers.
 
+    // TODO: possible bug in the future we should only advance after we have fully parsed the extended header.
     let extended_header_buffer =
       match buffer_array(reader, &mut state.temp_old_gnu_sparse_header_buffer)? {
         Some(buffer) => buffer,
@@ -928,7 +1064,6 @@ impl TarParser {
       .peek_exact(bytes_to_read)
       .expect("BUG: Incremental PAX data reading failed");
 
-    // make this non-fatal just audit log it
     let bytes_read = self.pax_parser.write(pax_bytes, false)?;
     reader
       .skip(bytes_read)

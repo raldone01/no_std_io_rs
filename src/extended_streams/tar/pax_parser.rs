@@ -1,8 +1,9 @@
-use core::panic;
+use core::{num::ParseIntError, panic};
 
 use alloc::{collections::TryReserveError, string::String, vec::Vec};
 
 use hashbrown::HashMap;
+use thiserror::Error;
 
 use crate::{
   extended_streams::tar::{
@@ -19,6 +20,21 @@ use crate::{
   },
   CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, Write, WriteAllError,
 };
+
+/// TODO: rework
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum PaxParserError {
+  #[error(
+    "Corrupt pax length field: The length field is longer than {max_length_field_length} bytes"
+  )]
+  CorruptPaxLength { max_length_field_length: usize },
+  #[error("Corrupt pax length field: {0}")]
+  CorruptPaxLengthInteger(ParseIntError),
+  #[error("Corrupt pax key")]
+  CorruptPaxKey,
+  #[error("Corrupt pax value")]
+  CorruptPaxValue,
+}
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum PaxConfidence {
@@ -546,9 +562,12 @@ impl PaxParser {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
       ) => {
-        return Err(TarParserError::CorruptPaxLength {
-          max_length_field_length: state.kv_cursor.full_buffer().len(),
-        })
+        return Err(
+          PaxParserError::CorruptPaxLength {
+            max_length_field_length: state.kv_cursor.full_buffer().len(),
+          }
+          .into(),
+        );
       },
     }
 
@@ -556,7 +575,7 @@ impl PaxParser {
     let length_str = core::str::from_utf8(state.kv_cursor.before()).unwrap_or("0");
     let length = match length_str.parse::<usize>() {
       Ok(value) => value,
-      Err(e) => return Err(TarParserError::CorruptPaxLengthInteger(e)),
+      Err(e) => return Err(PaxParserError::CorruptPaxLengthInteger(e).into()),
     };
 
     let length = length.saturating_sub(state.kv_cursor.before().len() + 1);
@@ -590,7 +609,7 @@ impl PaxParser {
           // If the length is 0, we are done with this key-value pair
           return Ok(PaxParserState::default());
         }
-        let key = String::from_utf8(state.keyword).map_err(|_| TarParserError::CorruptPaxKey)?;
+        let key = String::from_utf8(state.keyword).map_err(|_| PaxParserError::CorruptPaxKey)?;
         return Ok(PaxParserState::ParsingValue(StateParsingValue {
           key,
           length_after_equals,
@@ -606,9 +625,12 @@ impl PaxParser {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(TryReserveError { .. })),
       ) => {
-        return Err(TarParserError::CorruptPaxLength {
-          max_length_field_length: state.keyword.len(),
-        })
+        return Err(
+          PaxParserError::CorruptPaxLength {
+            max_length_field_length: state.keyword.len(),
+          }
+          .into(),
+        )
       },
     }
   }
@@ -620,7 +642,7 @@ impl PaxParser {
   ) -> Result<PaxParserState, TarParserError> {
     if state.length_after_equals == 0 {
       // Record must end in a newline, so length of value part must be at least 1.
-      return Err(TarParserError::CorruptPaxValue);
+      return Err(PaxParserError::CorruptPaxValue.into());
     }
 
     let value_len = state.length_after_equals - 1;
@@ -652,12 +674,12 @@ impl PaxParser {
 
     let newline_char = cursor.full_buffer()[cursor.position()];
     if newline_char != b'\n' {
-      return Err(TarParserError::CorruptPaxValue);
+      return Err(PaxParserError::CorruptPaxValue.into());
     }
     cursor.set_position(cursor.position() + 1);
 
     // We have a full key-value pair. Ingest it.
-    let value = String::from_utf8(state.value).map_err(|_| TarParserError::CorruptPaxValue)?;
+    let value = String::from_utf8(state.value).map_err(|_| PaxParserError::CorruptPaxValue)?;
 
     self.ingest_attribute(self.current_pax_mode, state.key, value);
 
@@ -826,8 +848,8 @@ mod tests {
     let data = b"abc path=foo\n";
     assert!(matches!(
       parser.write_all(data, false),
-      Err(WriteAllError::Io(TarParserError::CorruptPaxLengthInteger(
-        ParseIntError { .. }
+      Err(WriteAllError::Io(TarParserError::PaxParserError(
+        PaxParserError::CorruptPaxLengthInteger(ParseIntError { .. })
       )))
     ));
   }
@@ -839,7 +861,9 @@ mod tests {
     let data = b"11 path=foo ";
     assert_eq!(
       parser.write_all(data, false),
-      Err(WriteAllError::Io(TarParserError::CorruptPaxValue))
+      Err(WriteAllError::Io(TarParserError::PaxParserError(
+        PaxParserError::CorruptPaxValue
+      )))
     );
   }
 }

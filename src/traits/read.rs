@@ -87,11 +87,11 @@ pub trait ReadLimited: Read {
   ///
   /// Returns a new [`LimitedReader`] instance.
   #[must_use]
-  fn take(&mut self, read_limit_bytes: usize) -> LimitedReader<'_, Self>;
+  fn take(&mut self, read_limit_bytes: usize) -> LimitedReader<&mut Self>;
 }
 
 impl<R: Read + ?Sized> ReadLimited for R {
-  fn take(&mut self, read_limit_bytes: usize) -> LimitedReader<'_, Self> {
+  fn take(&mut self, read_limit_bytes: usize) -> LimitedReader<&mut Self> {
     LimitedReader::new(self, read_limit_bytes)
   }
 }

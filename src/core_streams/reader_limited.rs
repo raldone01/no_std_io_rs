@@ -6,16 +6,16 @@ use crate::Read;
 /// This is useful when handling user input to prevent resource exhaustion attacks.
 ///
 /// This is the equivalent of `std::io::Read::take`.
-pub struct LimitedReader<'a, R: Read + ?Sized> {
-  source_reader: &'a mut R,
+pub struct LimitedReader<R: Read> {
+  source_reader: R,
   read_limit_bytes: usize,
   bytes_read: usize,
 }
 
-impl<'a, R: Read + ?Sized> LimitedReader<'a, R> {
+impl<R: Read> LimitedReader<R> {
   /// Creates a new `LimitedReader` with the specified limit.
   #[must_use]
-  pub fn new(source_reader: &'a mut R, read_limit_bytes: usize) -> Self {
+  pub fn new(source_reader: R, read_limit_bytes: usize) -> Self {
     Self {
       source_reader,
       read_limit_bytes,
@@ -38,7 +38,7 @@ pub enum LimitedReaderReadError<U> {
   UnderlyingReadError(#[from] U),
 }
 
-impl<'a, R: Read + ?Sized> Read for LimitedReader<'a, R> {
+impl<R: Read> Read for LimitedReader<R> {
   type ReadError = LimitedReaderReadError<R::ReadError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {

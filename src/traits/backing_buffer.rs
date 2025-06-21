@@ -118,14 +118,15 @@ impl BackingBuffer for Box<[u8]> {
 }
 
 /// Imposes a size limit on the resize function of a [`BackingBufferMut`].
-pub struct LimitedBackingBuffer<'a, B: BackingBuffer + ?Sized> {
-  backing_buffer: &'a mut B,
+#[derive(Clone, Debug)]
+pub struct LimitedBackingBuffer<B: BackingBuffer> {
+  backing_buffer: B,
   max_size: usize,
 }
 
-impl<'a, B: BackingBuffer + ?Sized> LimitedBackingBuffer<'a, B> {
+impl<B: BackingBuffer> LimitedBackingBuffer<B> {
   #[must_use]
-  pub fn new(backing_buffer: &'a mut B, max_size: usize) -> Self {
+  pub fn new(backing_buffer: B, max_size: usize) -> Self {
     Self {
       backing_buffer,
       max_size,
@@ -149,7 +150,7 @@ pub enum LimitedBackingBufferError<U> {
   ResizeError(#[from] U),
 }
 
-impl<B: BackingBuffer + ?Sized> BackingBuffer for LimitedBackingBuffer<'_, B> {
+impl<B: BackingBuffer> BackingBuffer for LimitedBackingBuffer<B> {
   type ResizeError = LimitedBackingBufferError<B::ResizeError>;
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
@@ -172,13 +173,13 @@ impl<B: BackingBuffer + ?Sized> BackingBuffer for LimitedBackingBuffer<'_, B> {
   }
 }
 
-impl<B: BackingBuffer + ?Sized> AsMut<[u8]> for LimitedBackingBuffer<'_, B> {
+impl<B: BackingBuffer> AsMut<[u8]> for LimitedBackingBuffer<B> {
   fn as_mut(&mut self) -> &mut [u8] {
     self.backing_buffer.as_mut()
   }
 }
 
-impl<B: BackingBuffer + ?Sized> AsRef<[u8]> for LimitedBackingBuffer<'_, B> {
+impl<B: BackingBuffer> AsRef<[u8]> for LimitedBackingBuffer<B> {
   fn as_ref(&self) -> &[u8] {
     self.backing_buffer.as_ref()
   }

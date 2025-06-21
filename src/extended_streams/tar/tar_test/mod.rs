@@ -96,7 +96,7 @@ fn assert_test_archive_simple_files(files: &[TarInode], archive_name: &str) {
 }
 
 fn assert_parse_archive(archive: &SimpleFile, bytewise: bool) {
-  let mut tar_parser = TarParser::new(TarParserOptions::default());
+  let mut tar_parser = TarParser::default();
   let parser_result = match bytewise {
     true => BytewiseWriter::new(&mut tar_parser).write_all(archive.data, false),
     false => tar_parser.write_all(archive.data, false),

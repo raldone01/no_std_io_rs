@@ -1,29 +1,67 @@
+use core::marker::PhantomData;
+
 use alloc::vec::Vec;
 
+use thiserror::Error;
+
 use crate::{
-  extended_streams::tar::{SparseFileInstruction, TarParserError},
-  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, WriteAllError,
+  extended_streams::tar::{
+    CommonParseError, IgnoreTarViolationHandler, SparseFileInstruction, TarParserError,
+    TarViolationHandler,
+  },
+  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, LimitedBackingBuffer, WriteAllError,
 };
 
-#[derive(Debug, PartialEq, Eq)]
-struct StateParsingNumberOfMaps {
-  number_string_cursor: Cursor<[u8; 20]>,
+// TODO: use violation handler
+
+fn max_string_length_from_limit(limit: usize, radix: usize) -> usize {
+  if limit == 0 {
+    return 1; // "0" is the only representation
+  }
+
+  limit.ilog(radix) as usize + 1
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum GnuSparse1_0ParserError {
+  #[error("Parsing field {field} failed: {error}")]
+  CorruptField {
+    field: &'static str,
+    error: CommonParseError,
+  },
+}
+
+#[derive(Debug)]
+struct StateParsingNumberOfMaps {
+  number_string_cursor: Cursor<LimitedBackingBuffer<Vec<u8>>>,
+}
+
+impl StateParsingNumberOfMaps {
+  #[must_use]
+  pub fn new(limits: &GnuSparse1_0ParserLimits) -> Self {
+    Self {
+      number_string_cursor: Cursor::new(LimitedBackingBuffer::new(
+        Vec::new(),
+        max_string_length_from_limit(limits.max_number_of_maps, 10),
+      )),
+    }
+  }
+}
+
+#[derive(Debug)]
 struct StateParsingMapEntry {
   remaining_maps: usize,
-  value_string_cursor: Cursor<[u8; 20]>,
+  value_string_cursor: Cursor<LimitedBackingBuffer<Vec<u8>>>,
   parsed_offset: Option<u64>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct StateSkippingPadding {
   /// The amount of padding that still needs to be skipped.
   remaining_padding: usize,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum ParserState {
   ParsingNumberOfMaps(StateParsingNumberOfMaps),
   ParsingMapEntry(StateParsingMapEntry),
@@ -31,11 +69,18 @@ enum ParserState {
   Finished,
 }
 
-impl Default for ParserState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GnuSparse1_0ParserLimits {
+  pub max_number_of_maps: usize,
+  pub max_map_entry_value: usize,
+}
+
+impl Default for GnuSparse1_0ParserLimits {
   fn default() -> Self {
-    ParserState::ParsingNumberOfMaps(StateParsingNumberOfMaps {
-      number_string_cursor: Cursor::new([0; 20]),
-    })
+    Self {
+      max_number_of_maps: 256,
+      max_map_entry_value: usize::MAX,
+    }
   }
 }
 
@@ -44,15 +89,40 @@ impl Default for ParserState {
 /// The first number gives the number of maps in the file.
 /// Each map is a pair of numbers: the offset in the file and the size of the data at that offset.
 /// The map is padded to the next 512 byte block boundary.
-#[derive(Default)]
-pub struct GnuSparse1_0Parser {
+#[derive(Debug)]
+pub struct GnuSparse1_0Parser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
   state: ParserState,
   pub(crate) bytes_read: usize,
+  limits: GnuSparse1_0ParserLimits,
+  _violation_handler: PhantomData<VH>,
 }
 
-impl GnuSparse1_0Parser {
+impl<VH: TarViolationHandler> Default for GnuSparse1_0Parser<VH> {
+  fn default() -> Self {
+    let limits = GnuSparse1_0ParserLimits::default();
+    Self {
+      state: ParserState::ParsingNumberOfMaps(StateParsingNumberOfMaps::new(&limits)),
+      bytes_read: 0,
+      limits,
+      _violation_handler: PhantomData,
+    }
+  }
+}
+
+impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
+  #[must_use]
+  fn map_corrupt_field<T: Into<CommonParseError>>(
+    field: &'static str,
+  ) -> impl FnOnce(T) -> GnuSparse1_0ParserError {
+    move |error| GnuSparse1_0ParserError::CorruptField {
+      field,
+      error: error.into(),
+    }
+  }
+
   fn state_parsing_number_of_maps(
     &mut self,
+    //vh: &mut VH,
     cursor: &mut Cursor<&[u8]>,
     mut state: StateParsingNumberOfMaps,
   ) -> Result<ParserState, TarParserError> {
@@ -72,10 +142,12 @@ impl GnuSparse1_0Parser {
       Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
-        | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
+        | CopyUntilError::IoWrite(WriteAllError::Io(..)),
       ) => {
-        return Err(TarParserError::CorruptGnuSparse1_0NumberOfMaps {
-          max_number_of_maps_field_length: state.number_string_cursor.full_buffer().len(),
+        return Err(TarParserError::LimitExceeded {
+          limit: self.limits.max_number_of_maps,
+          unit: "gnu 1.0 sparse maps",
+          context: "Number of sparse map decimal string too long",
         })
       },
     }
@@ -83,17 +155,19 @@ impl GnuSparse1_0Parser {
     // Convert the number of maps bytes to a usize
     let number_of_maps_str =
       core::str::from_utf8(state.number_string_cursor.before()).unwrap_or("0");
-    let number_of_maps = match number_of_maps_str.parse::<usize>() {
-      Ok(value) => value,
-      Err(e) => return Err(TarParserError::CorruptGnuSparse1_0NumberOfMapsInteger(e)),
-    };
+    let number_of_maps = number_of_maps_str
+      .parse::<usize>()
+      .map_err(Self::map_corrupt_field("number of maps"))?;
     if number_of_maps == 0 {
       return Ok(ParserState::Finished);
     }
 
     Ok(ParserState::ParsingMapEntry(StateParsingMapEntry {
       remaining_maps: number_of_maps,
-      value_string_cursor: Cursor::new([0; 20]),
+      value_string_cursor: Cursor::new(LimitedBackingBuffer::new(
+        Vec::new(),
+        max_string_length_from_limit(self.limits.max_map_entry_value, 10),
+      )),
       parsed_offset: None,
     }))
   }
@@ -121,20 +195,21 @@ impl GnuSparse1_0Parser {
       Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
-        | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
+        | CopyUntilError::IoWrite(WriteAllError::Io(..)),
       ) => {
-        return Err(TarParserError::CorruptGnuSparse1_0MapEntryLength {
-          max_value_field_length: state.value_string_cursor.full_buffer().len(),
-        })
+        return Err(TarParserError::LimitExceeded {
+          limit: self.limits.max_map_entry_value,
+          unit: "gnu 1.0 sparse map entry",
+          context: "Sparse map entry decimal string too long",
+        });
       },
     }
 
     // Convert the offset or size bytes to a u64
     let value_str = core::str::from_utf8(state.value_string_cursor.before()).unwrap_or("0");
-    let value = match value_str.parse::<u64>() {
-      Ok(value) => value,
-      Err(e) => return Err(TarParserError::CorruptGnuSparse1_0MapEntryInteger(e)),
-    };
+    let value = value_str
+      .parse::<u64>()
+      .map_err(Self::map_corrupt_field("sparse map entry value"))?;
 
     if state.parsed_offset.is_none() {
       // This is the offset
@@ -222,12 +297,12 @@ impl GnuSparse1_0Parser {
 mod tests {
   use alloc::vec;
 
-  use crate::extended_streams::tar::tar_constants::BLOCK_SIZE;
+  use crate::extended_streams::tar::{tar_constants::BLOCK_SIZE, IgnoreTarViolationHandler};
 
   use super::*;
 
   fn drive_parser(
-    parser: &mut GnuSparse1_0Parser,
+    parser: &mut GnuSparse1_0Parser<IgnoreTarViolationHandler>,
     input: &[u8],
   ) -> Result<Vec<SparseFileInstruction>, TarParserError> {
     // Pad the input to a multiple of 512 bytes
