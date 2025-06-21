@@ -26,7 +26,7 @@ pub const TAR_ZERO_HEADER: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
 /// - `4` for block device
 /// - `5` for directory
 /// - `6` for FIFO
-/// - `7` for continuous file reserved (not used)
+/// - `7` for contiguous file reserved (not used)
 ///
 /// ## PAX:
 ///
@@ -63,8 +63,8 @@ pub enum TarTypeFlag {
   Directory,
   /// FIFO (named pipe)
   Fifo,
-  /// Indicates that this is a continuous file,
-  ContinuousFile,
+  /// Indicates that this is a contiguous file,
+  ContiguousFile,
   /// Extended header `pax`
   PaxExtendedHeader,
   /// Global extended header `pax`
@@ -90,7 +90,7 @@ impl TarTypeFlag {
         | TarTypeFlag::BlockDevice
         | TarTypeFlag::Directory
         | TarTypeFlag::Fifo
-        | TarTypeFlag::ContinuousFile
+        | TarTypeFlag::ContiguousFile
         | TarTypeFlag::SparseOldGnu
     )
   }
@@ -111,7 +111,7 @@ impl From<u8> for TarTypeFlag {
       b'4' => TarTypeFlag::BlockDevice,
       b'5' => TarTypeFlag::Directory,
       b'6' => TarTypeFlag::Fifo,
-      b'7' => TarTypeFlag::ContinuousFile,
+      b'7' => TarTypeFlag::ContiguousFile,
       b'x' => TarTypeFlag::PaxExtendedHeader,
       b'g' => TarTypeFlag::PaxGlobalExtendedHeader,
       b'L' => TarTypeFlag::LongNameGnu,
@@ -132,7 +132,7 @@ impl From<TarTypeFlag> for u8 {
       TarTypeFlag::BlockDevice => b'4',
       TarTypeFlag::Directory => b'5',
       TarTypeFlag::Fifo => b'6',
-      TarTypeFlag::ContinuousFile => b'7',
+      TarTypeFlag::ContiguousFile => b'7',
       TarTypeFlag::PaxExtendedHeader => b'x',
       TarTypeFlag::PaxGlobalExtendedHeader => b'g',
       TarTypeFlag::LongNameGnu => b'L',

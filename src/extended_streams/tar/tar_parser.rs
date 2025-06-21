@@ -335,13 +335,13 @@ pub(crate) struct InodeBuilder {
   pub(crate) dev_major: u32,
   pub(crate) dev_minor: u32,
   pub(crate) data_after_header_size: InodeConfidentValue<usize>,
-  pub(crate) continuous_file: bool,
+  pub(crate) contiguous_file: bool,
   pub(crate) data: Vec<u8>,
 }
 
 impl From<InodeBuilder> for RegularFileEntry {
   fn from(inode_builder: InodeBuilder) -> Self {
-    let continuous = inode_builder.continuous_file;
+    let contiguous = inode_builder.contiguous_file;
     let data = if inode_builder.sparse_file_instructions.is_empty() {
       FileData::Regular(inode_builder.data)
     } else {
@@ -351,7 +351,7 @@ impl From<InodeBuilder> for RegularFileEntry {
       }
     };
 
-    Self { continuous, data }
+    Self { contiguous, data }
   }
 }
 
@@ -830,7 +830,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     // now we match on the typeflag
     Ok(match typeflag {
       TarTypeFlag::RegularFile => {
-        self.inode_state.continuous_file = false;
+        self.inode_state.contiguous_file = false;
         self.compute_file_parsing_state(data_after_header, padding_after_data)
       },
       TarTypeFlag::HardLink => {
@@ -888,8 +888,8 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         self.finish_inode(|_, _| FileEntry::Fifo);
         self.compute_opt_skip_state(data_after_header_block_aligned, "Data after Fifo")
       },
-      TarTypeFlag::ContinuousFile => {
-        self.inode_state.continuous_file = true;
+      TarTypeFlag::ContiguousFile => {
+        self.inode_state.contiguous_file = true;
         self.compute_file_parsing_state(data_after_header, padding_after_data)
       },
       TarTypeFlag::PaxExtendedHeader => {

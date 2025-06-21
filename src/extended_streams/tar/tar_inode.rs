@@ -170,7 +170,7 @@ pub fn expand_sparse_files(files: &mut [TarInode]) {
 
 #[derive(Clone, Debug)]
 pub struct RegularFileEntry {
-  pub continuous: bool,
+  pub contiguous: bool,
   pub data: FileData,
 }
 
