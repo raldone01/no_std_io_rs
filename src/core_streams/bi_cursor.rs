@@ -233,7 +233,7 @@ impl<B: AsRef<[u8]>> BufferedRead for Cursor<B> {
   }
 }
 
-impl<B: BackingBuffer> Write for Cursor<B> {
+impl<B: BackingBuffer + AsMut<[u8]>> Write for Cursor<B> {
   type WriteError = B::ResizeError;
   type FlushError = Infallible;
 
@@ -245,7 +245,7 @@ impl<B: BackingBuffer> Write for Cursor<B> {
     let mut end_pos = self.position.saturating_add(input_buffer.len());
 
     // Resize if needed
-    if end_pos > self.backing_buffer.as_mut().len() {
+    if end_pos > self.backing_buffer.len() {
       let resize_result = self.backing_buffer.try_resize(end_pos);
       let backing_buffer_size = match resize_result {
         Ok(new_size) => new_size,

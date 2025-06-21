@@ -26,7 +26,7 @@ impl Display for FixedSizeBufferError {
   }
 }
 
-pub trait BackingBuffer: AsMut<[u8]> + AsRef<[u8]> {
+pub trait BackingBuffer {
   type ResizeError;
 
   /// Returns the new size of the buffer after resizing.
@@ -35,6 +35,9 @@ pub trait BackingBuffer: AsMut<[u8]> + AsRef<[u8]> {
   /// an error must be returned.
   #[must_use]
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>>;
+
+  #[must_use]
+  fn len(&self) -> usize;
 }
 
 impl<B: BackingBuffer + ?Sized> BackingBuffer for &mut B {
@@ -43,9 +46,13 @@ impl<B: BackingBuffer + ?Sized> BackingBuffer for &mut B {
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
     (**self).try_resize(requested_size)
   }
+
+  fn len(&self) -> usize {
+    (**self).len()
+  }
 }
 
-impl BackingBuffer for Vec<u8> {
+impl<T: Clone + Default> BackingBuffer for Vec<T> {
   type ResizeError = TryReserveError;
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
@@ -56,12 +63,16 @@ impl BackingBuffer for Vec<u8> {
         size_after_resize: len,
         resize_error: e,
       })?;
-    self.resize(requested_size, 0);
+    self.resize(requested_size, Default::default());
     Ok(requested_size)
+  }
+
+  fn len(&self) -> usize {
+    (**self).len()
   }
 }
 
-impl BackingBuffer for &mut [u8] {
+impl<T> BackingBuffer for &mut [T] {
   type ResizeError = FixedSizeBufferError;
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
@@ -77,9 +88,13 @@ impl BackingBuffer for &mut [u8] {
     }
     Ok(self.len())
   }
+
+  fn len(&self) -> usize {
+    (**self).len()
+  }
 }
 
-impl<const N: usize> BackingBuffer for [u8; N] {
+impl<const N: usize, T> BackingBuffer for [T; N] {
   type ResizeError = FixedSizeBufferError;
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
@@ -94,14 +109,18 @@ impl<const N: usize> BackingBuffer for [u8; N] {
     }
     Ok(N)
   }
+
+  fn len(&self) -> usize {
+    self.as_ref().len()
+  }
 }
 
-impl BackingBuffer for Box<[u8]> {
+impl<T> BackingBuffer for Box<[T]> {
   type ResizeError = FixedSizeBufferError;
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
-    // A Box<[u8]> has a fixed size. Resizing would require a new allocation,
-    // which is not supported by this implementation. For a resizable buffer, use Vec<u8>.
+    // A Box<[T]> has a fixed size. Resizing would require a new allocation,
+    // which is not supported by this implementation. For a resizable buffer, use Vec<T>.
     let len = self.len();
 
     if requested_size > len {
@@ -114,6 +133,10 @@ impl BackingBuffer for Box<[u8]> {
       });
     }
     Ok(len)
+  }
+
+  fn len(&self) -> usize {
+    self.as_ref().len()
   }
 }
 
@@ -155,10 +178,10 @@ impl<B: BackingBuffer> BackingBuffer for LimitedBackingBuffer<B> {
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
     let resize_size = requested_size.min(self.max_size);
-    let new_elements = resize_size.saturating_sub(self.backing_buffer.as_mut().len());
+    let new_elements = resize_size.saturating_sub(self.backing_buffer.len());
     if new_elements == 0 {
       return Err(ResizeError {
-        size_after_resize: self.backing_buffer.as_mut().len(),
+        size_after_resize: self.backing_buffer.len(),
         resize_error: Self::ResizeError::MemoryLimitExceeded(self.max_size),
       });
     }
@@ -171,15 +194,19 @@ impl<B: BackingBuffer> BackingBuffer for LimitedBackingBuffer<B> {
       })?;
     Ok(requested_size)
   }
+
+  fn len(&self) -> usize {
+    self.backing_buffer.len()
+  }
 }
 
-impl<B: BackingBuffer> AsMut<[u8]> for LimitedBackingBuffer<B> {
+impl<B: BackingBuffer + AsMut<[u8]>> AsMut<[u8]> for LimitedBackingBuffer<B> {
   fn as_mut(&mut self) -> &mut [u8] {
     self.backing_buffer.as_mut()
   }
 }
 
-impl<B: BackingBuffer> AsRef<[u8]> for LimitedBackingBuffer<B> {
+impl<B: BackingBuffer + AsRef<[u8]>> AsRef<[u8]> for LimitedBackingBuffer<B> {
   fn as_ref(&self) -> &[u8] {
     self.backing_buffer.as_ref()
   }

@@ -30,6 +30,8 @@ use crate::{
   BufferedRead as _, Write, WriteAll as _,
 };
 
+// TODO: use enums instead of context strings??? but they would need display!
+
 pub struct TarParserLimits {
   gnu_sparse_1_0_limits: GnuSparse1_0ParserLimits,
 }

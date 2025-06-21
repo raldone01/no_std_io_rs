@@ -22,7 +22,7 @@ pub enum BufferedReaderReadError<U, RU> {
   Io(#[from] U),
 }
 
-impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
+impl<R: Read, B: BackingBuffer + AsMut<[u8]>> BufferedReader<R, B> {
   /// Creates a new buffered reader with the given source and buffer.
   #[must_use]
   pub fn new(source: R, internal_buffer: B, read_chunk_size: usize) -> Self {
@@ -46,7 +46,7 @@ impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
       return Ok(&[]);
     }
 
-    if byte_count > self.buffer.as_ref().len() {
+    if byte_count > self.buffer.len() {
       // If the buffer is smaller than the requested size, we need to grow it.
       // If we grow it, we grow it to at least the read_chunk_size.
       let grow_target = byte_count.div_ceil(self.read_chunk_size).max(1) * self.read_chunk_size;
@@ -104,7 +104,7 @@ impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
     &mut self,
     peek: bool,
   ) -> Result<&[u8], BufferedReaderReadError<R::ReadError, B::ResizeError>> {
-    let buffer_size = self.buffer.as_ref().len();
+    let buffer_size = self.buffer.len();
     self
       .read_exact_internal(buffer_size, false, peek)
       .map_err(|e| match e {
@@ -119,7 +119,7 @@ impl<R: Read, B: BackingBuffer> BufferedReader<R, B> {
   }
 }
 
-impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
+impl<R: Read, B: BackingBuffer + AsMut<[u8]>> Read for BufferedReader<R, B> {
   type ReadError = BufferedReaderReadError<R::ReadError, B::ResizeError>;
 
   fn read(&mut self, output_buffer: &mut [u8]) -> Result<usize, Self::ReadError> {
@@ -168,7 +168,7 @@ impl<R: Read, B: BackingBuffer> Read for BufferedReader<R, B> {
   }
 }
 
-impl<R: Read, B: BackingBuffer> BufferedRead for BufferedReader<R, B> {
+impl<R: Read, B: BackingBuffer + AsMut<[u8]>> BufferedRead for BufferedReader<R, B> {
   type UnderlyingReadExactError = Self::ReadError;
   type ForkedBufferedReaderImplementation<'b>
     = ForkedBufferedReader<'b, Self>
