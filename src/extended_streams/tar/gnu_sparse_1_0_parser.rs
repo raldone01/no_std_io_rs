@@ -313,8 +313,8 @@ mod tests {
     let input = b"2\n0\n100\n200\n300\n".as_slice();
     let result = drive_parser(&mut parser, input).expect("Failed to parse input");
     assert_eq!(
-      result.to_vec(),
-      vec![
+      result.as_slice(),
+      [
         SparseFileInstruction {
           offset_before: 0,
           data_size: 100,
