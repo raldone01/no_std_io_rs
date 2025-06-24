@@ -1,5 +1,4 @@
 use core::{
-  cmp::Ordering,
   mem::MaybeUninit,
   ops::{Index, IndexMut, RangeBounds},
   slice::{self, SliceIndex},
@@ -16,30 +15,52 @@ use crate::{BackingBuffer, LimitedBackingBufferError, ResizeError};
 #[derive(Debug, Hash, Clone)]
 pub struct LimitedVec<T> {
   vec: Vec<T>,
-  max_size: usize,
+  max_len: usize,
 }
 
 impl<T> LimitedVec<T> {
   #[inline]
   #[must_use]
-  pub const fn new(max_size: usize) -> Self {
+  pub const fn new(max_len: usize) -> Self {
     Self {
       vec: Vec::new(),
-      max_size,
+      max_len,
     }
+  }
+
+  /// This function does not check the length of the vec since the vec exists already anyway.
+  #[inline]
+  #[must_use]
+  pub fn from_vec(max_len: usize, vec: Vec<T>) -> Self {
+    Self { vec, max_len }
+  }
+
+  #[inline]
+  #[must_use]
+  pub fn max_len(&self) -> usize {
+    self.max_len
+  }
+
+  #[inline]
+  #[must_use]
+  pub fn to_vec(self) -> Vec<T> {
+    self.vec
   }
 
   #[inline]
   #[must_use]
   pub fn with_capacity(
-    max_size: usize,
+    max_len: usize,
     capacity: usize,
   ) -> Result<Self, LimitedBackingBufferError<TryReserveError>> {
-    if capacity > max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(max_size));
+    if capacity > max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(max_len));
     }
     let vec = Vec::with_capacity(capacity); // TODO: use try_with_capacity once it is stable
-    Ok(Self { vec, max_size })
+    Ok(Self {
+      vec,
+      max_len: max_len,
+    })
   }
 
   #[inline]
@@ -52,10 +73,8 @@ impl<T> LimitedVec<T> {
     &mut self,
     additional: usize,
   ) -> Result<(), LimitedBackingBufferError<TryReserveError>> {
-    if self.len() + additional > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if self.len() + additional > self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.try_reserve(additional)?;
     Ok(())
@@ -65,10 +84,8 @@ impl<T> LimitedVec<T> {
     &mut self,
     additional: usize,
   ) -> Result<(), LimitedBackingBufferError<TryReserveError>> {
-    if self.len() + additional > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if self.len() + additional > self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.try_reserve_exact(additional)?;
     Ok(())
@@ -126,10 +143,8 @@ impl<T> LimitedVec<T> {
     index: usize,
     element: T,
   ) -> Result<(), LimitedBackingBufferError<TryReserveError>> {
-    if self.vec.len() >= self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if self.vec.len() >= self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.insert(index, element);
     Ok(())
@@ -172,10 +187,8 @@ impl<T> LimitedVec<T> {
 
   #[inline]
   pub fn push(&mut self, value: T) -> Result<(), LimitedBackingBufferError<TryReserveError>> {
-    if self.vec.len() >= self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if self.vec.len() >= self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.push(value);
     Ok(())
@@ -205,10 +218,8 @@ impl<T> LimitedVec<T> {
     &mut self,
     other: &mut Self,
   ) -> Result<(), LimitedBackingBufferError<TryReserveError>> {
-    if self.vec.len() + other.vec.len() > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if self.vec.len() + other.vec.len() > self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.append(&mut other.vec);
     Ok(())
@@ -240,7 +251,7 @@ impl<T> LimitedVec<T> {
     let split_vec = self.vec.split_off(at);
     Self {
       vec: split_vec,
-      max_size: self.max_size,
+      max_len: self.max_len,
     }
   }
 
@@ -252,10 +263,8 @@ impl<T> LimitedVec<T> {
   where
     F: FnMut() -> T,
   {
-    if new_len > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if new_len > self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.resize_with(new_len, f);
     Ok(())
@@ -279,10 +288,8 @@ impl<T: Clone> LimitedVec<T> {
     new_len: usize,
     value: T,
   ) -> Result<(), LimitedBackingBufferError<TryReserveError>> {
-    if new_len > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if new_len > self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.resize(new_len, value);
     Ok(())
@@ -292,10 +299,8 @@ impl<T: Clone> LimitedVec<T> {
     &mut self,
     other: &[T],
   ) -> Result<(), LimitedBackingBufferError<TryReserveError>> {
-    if self.vec.len() + other.len() > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if self.vec.len() + other.len() > self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.extend_from_slice(other);
     Ok(())
@@ -319,10 +324,8 @@ impl<T: Clone> LimitedVec<T> {
       core::ops::Bound::Unbounded => self.vec.len(),
     };
     let range_len = right_bound.saturating_sub(left_bound);
-    if self.vec.len() + range_len > self.max_size {
-      return Err(LimitedBackingBufferError::MemoryLimitExceeded(
-        self.max_size,
-      ));
+    if self.vec.len() + range_len > self.max_len {
+      return Err(LimitedBackingBufferError::MemoryLimitExceeded(self.max_len));
     }
     self.vec.extend_from_within(src);
     Ok(())
@@ -378,11 +381,11 @@ impl<T, I: SliceIndex<[T]>> IndexMut<I> for LimitedVec<T> {
 
 impl<T> LimitedVec<T> {
   #[inline]
-  fn try_from_iter<I: IntoIterator<Item = T>>(
-    max_size: usize,
+  pub fn try_from_iter<I: IntoIterator<Item = T>>(
+    max_len: usize,
     iter: I,
   ) -> Result<Self, LimitedBackingBufferError<TryReserveError>> {
-    let mut vec = LimitedVec::new(max_size);
+    let mut vec = LimitedVec::new(max_len);
     for item in iter {
       vec.push(item)?;
     }
@@ -468,12 +471,12 @@ impl<T: Clone + Default> BackingBuffer for LimitedVec<T> {
   type ResizeError = LimitedBackingBufferError<TryReserveError>;
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
-    let resize_size = requested_size.min(self.max_size);
+    let resize_size = requested_size.min(self.max_len);
     let new_elements = resize_size.saturating_sub(self.vec.len());
     if new_elements == 0 {
       return Err(ResizeError {
         size_after_resize: self.vec.len(),
-        resize_error: Self::ResizeError::MemoryLimitExceeded(self.max_size),
+        resize_error: Self::ResizeError::MemoryLimitExceeded(self.max_len),
       });
     }
     let requested_size = self.vec.try_resize(resize_size).map_err(|e| ResizeError {

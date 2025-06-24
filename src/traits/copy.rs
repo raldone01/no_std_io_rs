@@ -169,7 +169,7 @@ pub trait CopyBuffered: BufferedRead {
         .skip(bytes_read_count + (!write_delimiter && delimiter_found) as usize)
         .map_err(|e| match e {
           ReadExactError::UnexpectedEof { .. } => {
-            panic!("BUG: We are only skipping bytes that are in the buffer.")
+            unreachable!("BUG: We are only skipping bytes that are in the buffer.")
           },
           ReadExactError::Io(e) => CopyUntilError::IoRead(e),
         })?;

@@ -18,7 +18,8 @@ use crate::{
     InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat, TarParserError,
     TimeStamp,
   },
-  CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, Write, WriteAllError,
+  CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec, Write,
+  WriteAllError,
 };
 
 /// TODO: rework
@@ -243,7 +244,8 @@ impl PaxParser {
               .or(self.gnu_sparse_realsize_0_01.get_with_confidence()),
           ));
         if sparse_format == SparseFormat::Gnu0_0 || sparse_format == SparseFormat::Gnu0_1 {
-          inode_builder.sparse_file_instructions = self.gnu_sparse_map_local.clone();
+          inode_builder.sparse_file_instructions =
+            LimitedVec::from_vec(usize::MAX, self.gnu_sparse_map_local.clone());
         }
       }
     }
@@ -540,8 +542,6 @@ impl PaxParser {
     cursor: &mut Cursor<&[u8]>,
     mut state: StateParsingNewKV,
   ) -> Result<PaxParserState, TarParserError> {
-    let debug_buffer_char = str::from_utf8(cursor.full_buffer());
-
     // Read the length until we hit a space or newline
     let copy_buffered_until_result = cursor.copy_buffered_until(
       &mut &mut state.kv_cursor,
@@ -557,7 +557,7 @@ impl PaxParser {
         // Not enough data in the current `bytes` slice, preserve state and wait for more
         return Ok(PaxParserState::ParsingNewKV(state));
       },
-      Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
+      Err(CopyUntilError::IoRead(..)) => unreachable!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
@@ -620,7 +620,7 @@ impl PaxParser {
         // Not enough data in the current `bytes` slice, preserve state and wait for more.
         return Ok(PaxParserState::ParsingKey(state));
       },
-      Err(CopyUntilError::IoRead(..)) => panic!("BUG: Infallible error in read operation"),
+      Err(CopyUntilError::IoRead(..)) => unreachable!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(TryReserveError { .. })),
@@ -702,7 +702,7 @@ impl Write for PaxParser {
       PaxParserState::ParsingKey(state) => self.state_parsing_key(&mut cursor, state)?,
       PaxParserState::ParsingValue(state) => self.state_parsing_value(&mut cursor, state)?,
       PaxParserState::NoNextStateSet => {
-        panic!("BUG: No next state set in PaxParser");
+        unreachable!("BUG: No next state set in PaxParser");
       },
     };
 

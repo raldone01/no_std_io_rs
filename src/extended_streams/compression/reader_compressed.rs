@@ -82,7 +82,9 @@ impl<R: Read + ?Sized> Read for CompressedReader<'_, R> {
         },
         Ok(MZStatus::StreamEnd) => return Ok(result.bytes_written),
         Ok(MZStatus::NeedDict) => {
-          panic!("Decompressor returned NeedDict status, which is not supported in this context");
+          unreachable!(
+            "Decompressor returned NeedDict status, which is not supported in this context"
+          );
         },
         Err(MZError::Buf) => {
           if bytes_read_count == 0 {

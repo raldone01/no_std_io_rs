@@ -3,14 +3,23 @@ use alloc::vec::Vec;
 use crate::extended_streams::tar::TarParserError;
 
 pub trait TarViolationHandler {
-  fn handle(&mut self, error: TarParserError) -> Result<(), TarParserError>;
+  /// When a violation occurs, this method is called.
+  /// It should return `true` if parsing should continue,
+  /// or `false` if parsing should stop.
+  ///
+  /// Sometimes, the parsing may stop even if the handler returns `true`,
+  /// since some errors are unrecoverable.
+  ///
+  /// The parser implementation also avoid creating intermediate buffer just for error recovery.
+  #[must_use]
+  fn handle(&mut self, error: &TarParserError) -> bool;
 }
 
 pub struct StrictTarViolationHandler;
 
 impl TarViolationHandler for StrictTarViolationHandler {
-  fn handle(&mut self, error: TarParserError) -> Result<(), TarParserError> {
-    Err(error)
+  fn handle(&mut self, _error: &TarParserError) -> bool {
+    false
   }
 }
 
@@ -29,9 +38,9 @@ impl AuditTarViolationHandler {
 }
 
 impl TarViolationHandler for AuditTarViolationHandler {
-  fn handle(&mut self, error: TarParserError) -> Result<(), TarParserError> {
-    self.violations.push(error);
-    Ok(())
+  fn handle(&mut self, error: &TarParserError) -> bool {
+    self.violations.push(error.clone());
+    true
   }
 }
 
@@ -39,7 +48,7 @@ impl TarViolationHandler for AuditTarViolationHandler {
 pub struct IgnoreTarViolationHandler;
 
 impl TarViolationHandler for IgnoreTarViolationHandler {
-  fn handle(&mut self, _error: TarParserError) -> Result<(), TarParserError> {
-    Ok(())
+  fn handle(&mut self, _error: &TarParserError) -> bool {
+    true
   }
 }

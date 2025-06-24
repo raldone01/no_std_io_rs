@@ -143,7 +143,9 @@ impl BufferedRead for &[u8] {
   fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
     let byte_count = self.len();
     self.read_exact(byte_count).map_err(|e| match e {
-      ReadExactError::UnexpectedEof { .. } => panic!("BUG: Unexpected EOF in slice read_buffered"),
+      ReadExactError::UnexpectedEof { .. } => {
+        unreachable!("BUG: Unexpected EOF in slice read_buffered")
+      },
       ReadExactError::Io(err) => err,
     })
   }

@@ -80,7 +80,7 @@ impl<'a, W: Write + ?Sized> CompressedWriter<'a, W> {
         self.finished = true;
       },
       Ok(MZStatus::NeedDict) => {
-        panic!("Compressor returned NeedDict status, which is not supported in this context");
+        unreachable!("Compressor returned NeedDict status, which is not supported in this context");
       },
       Err(e) => return Err(CompressedWriteError::<W::WriteError, W::FlushError>::MZError(e)),
     };

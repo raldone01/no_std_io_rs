@@ -192,7 +192,7 @@ impl<B: AsRef<[u8]>> Cursor<B> {
     let remaining = self.remaining();
     match self.read_exact_internal(remaining, peek) {
       Ok(bytes) => Ok(bytes),
-      Err(ReadExactError::UnexpectedEof { .. }) => panic!(
+      Err(ReadExactError::UnexpectedEof { .. }) => unreachable!(
         "Buffered read should not return EOF, remaining bytes: {}",
         remaining
       ),

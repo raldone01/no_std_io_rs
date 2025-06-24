@@ -109,7 +109,8 @@ impl<R: BufferedRead + ?Sized> Read for ForkedBufferedReader<'_, R> {
         // This is an error condition for read_exact, but here we can return what we got.
         &self
           .read_exact(bytes_read)
-          .unwrap_or_else(|_| panic!("Failed to read internal buffer. This is a bug!"))[position..]
+          .unwrap_or_else(|_| unreachable!("Failed to read internal buffer. This is a bug!"))
+          [position..]
       },
       Err(ReadExactError::Io(e)) => return Err(Self::ReadError::Io(e)),
     };

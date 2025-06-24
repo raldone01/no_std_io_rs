@@ -110,7 +110,7 @@ impl<R: Read, B: BackingBuffer + AsMut<[u8]>> BufferedReader<R, B> {
       .map_err(|e| match e {
         ReadExactError::Io(e) => e,
         ReadExactError::UnexpectedEof { .. } => {
-          panic!(
+          unreachable!(
             "Buffered read should not return EOF, remaining bytes: {}",
             buffer_size
           )
@@ -132,7 +132,7 @@ impl<R: Read, B: BackingBuffer + AsMut<[u8]>> Read for BufferedReader<R, B> {
     let buffered_bytes = if bytes_read_from_internal_buffer != 0 {
       self
         .read_exact(bytes_read_from_internal_buffer)
-        .unwrap_or_else(|_| panic!("Failed to read internal buffer. This is a bug!"))
+        .unwrap_or_else(|_| unreachable!("Failed to read internal buffer. This is a bug!"))
     } else {
       // The unexpected data functionality is not wanted here
       &[]
@@ -159,7 +159,7 @@ impl<R: Read, B: BackingBuffer + AsMut<[u8]>> Read for BufferedReader<R, B> {
         // This is an error condition for read_exact, but here we can return what we got.
         self
           .read_exact(self.bytes_in_buffer)
-          .unwrap_or_else(|_| panic!("Failed to read internal buffer. This is a bug!"))
+          .unwrap_or_else(|_| unreachable!("Failed to read internal buffer. This is a bug!"))
       },
       Err(ReadExactError::Io(e)) => return Err(e),
     };

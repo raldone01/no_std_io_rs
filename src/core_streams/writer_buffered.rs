@@ -108,7 +108,7 @@ mod tests {
     let mut buffered_writer = BufferedWriter::new(&mut bytewise_writer, [0; 20], true);
     buffered_writer
       .write_all(input_data, false)
-      .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
+      .unwrap_or_else(|e| unreachable!("Failed to write data: {}", e));
     buffered_writer
       .flush()
       .expect("Failed to flush buffered writer");
@@ -123,10 +123,10 @@ mod tests {
     let mut buffered_writer = BufferedWriter::new(&mut buffer_writer, [0; 20], false);
     buffered_writer
       .write_all(&input_data[..30], false)
-      .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
+      .unwrap_or_else(|e| unreachable!("Failed to write data: {}", e));
     buffered_writer
       .write_all(&input_data[30..], false)
-      .unwrap_or_else(|e| panic!("Failed to write data: {}", e));
+      .unwrap_or_else(|e| unreachable!("Failed to write data: {}", e));
     buffered_writer
       .flush()
       .expect("Failed to flush buffered writer");
