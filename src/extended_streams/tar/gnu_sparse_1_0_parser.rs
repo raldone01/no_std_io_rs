@@ -2,8 +2,8 @@ use core::marker::PhantomData;
 
 use crate::{
   extended_streams::tar::{
-    CommonParseError, CorruptField, IgnoreTarViolationHandler, SparseFileInstruction,
-    TarParserError, TarViolationHandler,
+    CommonParseError, CorruptFieldContext, IgnoreTarViolationHandler, LimitExceededContext,
+    SparseFileInstruction, TarParserError, TarViolationHandler,
   },
   BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, LimitedVec, UnwrapInfallible,
   WriteAllError,
@@ -75,10 +75,15 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
     }
   }
 
+  pub fn reset(&mut self) {
+    self.state = ParserState::default();
+    self.bytes_read = 0;
+  }
+
   #[must_use]
   fn map_corrupt_field<'a, T: Into<CommonParseError>>(
     vh: &'a mut VH,
-    field: CorruptField,
+    field: CorruptFieldContext,
   ) -> impl FnOnce(T) -> TarParserError + 'a {
     move |error| {
       let err = TarParserError::CorruptField {
@@ -116,8 +121,7 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
       ) => {
         let err = TarParserError::LimitExceeded {
           limit: MAX_VALUE_STRING_LENGTH,
-          unit: "gnu 1.0 sparse maps",
-          context: "Number of sparse map decimal string too long",
+          context: LimitExceededContext::GnuSparse1_0MapDecimalStringTooLong,
         };
         let _fatal_error = vh.handle(&err);
         return Err(err);
@@ -126,13 +130,13 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
 
     // Convert the number of maps bytes to a usize
     let number_of_maps_str = core::str::from_utf8(self.value_string_cursor.before()).map_err(
-      Self::map_corrupt_field(vh, CorruptField::GnuSparse1_0NumberOfMaps),
+      Self::map_corrupt_field(vh, CorruptFieldContext::GnuSparse1_0NumberOfMaps),
     )?;
     let number_of_maps = number_of_maps_str
       .parse::<usize>()
       .map_err(Self::map_corrupt_field(
         vh,
-        CorruptField::GnuSparse1_0NumberOfMaps,
+        CorruptFieldContext::GnuSparse1_0NumberOfMaps,
       ))?;
     if number_of_maps == 0 {
       return Ok(ParserState::Finished);
@@ -174,8 +178,7 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
       ) => {
         let err = TarParserError::LimitExceeded {
           limit: self.value_string_cursor.len(),
-          unit: "gnu 1.0 sparse map entry",
-          context: "Sparse map entry decimal string too long",
+          context: LimitExceededContext::GnuSparse1_0MapEntryDecimalStringTooLong,
         };
         // Recovering from this error would require keeping a buffer of the consumed data.
         let _fatal_error = vh.handle(&err);
@@ -185,11 +188,11 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
 
     // Convert the offset or size bytes to a u64
     let value_str = core::str::from_utf8(self.value_string_cursor.before()).map_err(
-      Self::map_corrupt_field(vh, CorruptField::GnuSparse1_0MapEntryValue),
+      Self::map_corrupt_field(vh, CorruptFieldContext::GnuSparse1_0MapEntryValue),
     )?;
     let value = value_str.parse::<u64>().map_err(Self::map_corrupt_field(
       vh,
-      CorruptField::GnuSparse1_0MapEntryValue,
+      CorruptFieldContext::GnuSparse1_0MapEntryValue,
     ))?;
 
     if let Some(offset_before) = state.parsed_offset_before.take() {
@@ -202,8 +205,7 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
         .map_err(|_| {
           let err = TarParserError::LimitExceeded {
             limit: sparse_file_instructions.max_len(),
-            unit: "sparse file instructions",
-            context: "Too many sparse file instructions",
+            context: LimitExceededContext::TooManySparseFileInstructions,
           };
           let _fatal_error = vh.handle(&err);
           err
@@ -255,32 +257,37 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
     cursor: &mut Cursor<&[u8]>,
     sparse_file_instructions: &mut LimitedVec<SparseFileInstruction>,
   ) -> Result<bool, TarParserError> {
-    // TODO: loop here to drive the parser until all available data is consumed.
-    let parser_state = core::mem::replace(&mut self.state, ParserState::Finished);
+    loop {
+      let parser_state = core::mem::replace(&mut self.state, ParserState::Finished);
 
-    let initial_cursor_position = cursor.position();
+      let initial_cursor_position = cursor.position();
 
-    let next_state = match parser_state {
-      ParserState::ParsingNumberOfMaps => self.state_parsing_number_of_maps(vh, cursor),
-      ParserState::ParsingMapEntry(state) => self.state_parsing_map_entry(
-        vh,
-        cursor,
-        state,
-        sparse_file_instructions,
-        initial_cursor_position,
-      ),
-      ParserState::SkippingPadding(state) => self.state_skipping_padding(cursor, state),
-      ParserState::Finished => unreachable!("BUG: No next state set in GnuSparse1_0Parser"),
-    };
+      let next_state = match parser_state {
+        ParserState::ParsingNumberOfMaps => self.state_parsing_number_of_maps(vh, cursor),
+        ParserState::ParsingMapEntry(state) => self.state_parsing_map_entry(
+          vh,
+          cursor,
+          state,
+          sparse_file_instructions,
+          initial_cursor_position,
+        ),
+        ParserState::SkippingPadding(state) => self.state_skipping_padding(cursor, state),
+        ParserState::Finished => Ok(ParserState::Finished),
+      };
 
-    let bytes_read_this_parse = cursor.position() - initial_cursor_position;
-    self.bytes_read += bytes_read_this_parse;
+      let bytes_read_this_parse = cursor.position() - initial_cursor_position;
+      self.bytes_read += bytes_read_this_parse;
 
-    self.state = next_state?;
+      self.state = next_state?;
 
-    match self.state {
-      ParserState::Finished => Ok(true),
-      _ => Ok(false),
+      if matches!(self.state, ParserState::Finished) {
+        return Ok(true);
+      }
+
+      if bytes_read_this_parse == 0 {
+        // No more data was read, we need to wait for more data
+        return Ok(false);
+      }
     }
   }
 }
@@ -304,7 +311,7 @@ mod tests {
     let mut cursor = Cursor::new(input_padded.as_slice());
     let mut sparse_file_instructions = LimitedVec::new(usize::MAX);
     let mut vh = IgnoreTarViolationHandler::default();
-    while !parser.parse(&mut vh, &mut cursor, &mut sparse_file_instructions)? {}
+    parser.parse(&mut vh, &mut cursor, &mut sparse_file_instructions)?;
     Ok(sparse_file_instructions)
   }
 
