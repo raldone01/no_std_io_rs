@@ -25,10 +25,11 @@ use crate::{
     IgnoreTarViolationHandler, RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry,
     TarInode, TarViolationHandler, TimeStamp,
   },
-  BufferedRead as _, LimitedVec, Write, WriteAll as _,
+  BufferedRead as _, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
 };
 
 // TODO: use enums instead of context strings??? but they would need display!
+// TODO: add spans, the byte offset at which an error occurred
 
 pub struct TarParserLimits {
   max_sparse_instructions: usize,
@@ -327,21 +328,16 @@ pub(crate) fn buffer_array<'a, const BUFFER_SIZE: usize>(
   temp_buffer: &'a mut Cursor<[u8; BUFFER_SIZE]>,
 ) -> Result<Option<&'a [u8]>, TarParserError> {
   // perform an incremental read into the tar header buffer
-  let bytes_to_read = temp_buffer.remaining().min(reader.remaining());
+  let read_bytes = reader
+    .read_buffered(temp_buffer.remaining())
+    .unwrap_infallible();
 
-  if bytes_to_read == BUFFER_SIZE {
+  if read_bytes.len() == BUFFER_SIZE {
     // We can directly pass through the buffer so we don't have to copy it to the intermediate buffer.
-    return Ok(Some(
-      reader
-        .read_exact(BUFFER_SIZE)
-        .expect("BUG: buffer_array direct patch through failed"),
-    ));
+    return Ok(Some(read_bytes));
   }
 
   // read bytes into the tar header buffer
-  let read_bytes = reader
-    .read_exact(bytes_to_read)
-    .expect("BUG: buffer_array incremental read failed");
   temp_buffer
     .write_all(read_bytes, false)
     .expect("BUG: buffer_array incremental write failed");
@@ -1043,11 +1039,11 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     mut state: StateSkippingData,
   ) -> Result<TarParserState<VH>, TarParserError> {
     // incrementally skip the data
-    let bytes_to_skip = state.remaining_data.min(reader.remaining());
-    reader
-      .skip(bytes_to_skip)
-      .expect("BUG: Incremental unknown data skipping failed");
-    state.remaining_data = state.remaining_data - bytes_to_skip;
+    let skipped_bytes = reader
+      .read_buffered(state.remaining_data)
+      .unwrap_infallible()
+      .len();
+    state.remaining_data -= skipped_bytes;
     Ok(if state.remaining_data == 0 {
       // We are done skipping unknown data, so we reset the parser state.
       TarParserState::default()
@@ -1063,13 +1059,12 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     mut state: StateParsingGnuLongName,
   ) -> Result<TarParserState<VH>, TarParserError> {
     // incrementally read the long name
-    let bytes_to_read = state.remaining_data.min(reader.remaining());
     let long_name_bytes = reader
-      .read_exact(bytes_to_read)
-      .expect("BUG: Incremental long name reading failed");
+      .read_buffered(state.remaining_data)
+      .unwrap_infallible();
 
     state.collected_name.extend_from_slice(long_name_bytes);
-    state.remaining_data = state.remaining_data - bytes_to_read;
+    state.remaining_data -= long_name_bytes.len();
     Ok(if state.remaining_data == 0 {
       // We are done reading the long name, so we parse it.
       let null_term = find_null_terminator_index(&state.collected_name);
@@ -1149,17 +1144,14 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     mut state: StateParsingPaxData,
   ) -> Result<TarParserState<VH>, TarParserError> {
     // incrementally read the PAX data
-    let bytes_to_read = state.remaining_data.min(reader.remaining());
     let pax_bytes = reader
-      .peek_exact(bytes_to_read)
-      .expect("BUG: Incremental PAX data reading failed");
+      .peek_buffered(state.remaining_data)
+      .unwrap_infallible();
 
     let bytes_read = self.pax_parser.write(pax_bytes, false)?;
-    reader
-      .skip(bytes_read)
-      .expect("BUG: Incremental PAX data reading failed");
+    reader.skip_buffered(bytes_read).unwrap_infallible();
 
-    state.remaining_data = state.remaining_data - bytes_read;
+    state.remaining_data -= bytes_read;
     Ok(if state.remaining_data == 0 {
       // We are done reading the PAX data, so we reset the parser state.
       if state.padding_after > 0 {
@@ -1207,13 +1199,12 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     mut state: StateReadingFileData,
   ) -> Result<TarParserState<VH>, TarParserError> {
     // incrementally read the file data
-    let bytes_to_read = state.remaining_data.min(reader.remaining());
     let file_data_bytes = reader
-      .read_exact(bytes_to_read)
-      .expect("BUG: Incremental file data reading failed");
+      .read_buffered(state.remaining_data)
+      .unwrap_infallible();
 
     self.inode_state.data.extend_from_slice(file_data_bytes);
-    state.remaining_data -= bytes_to_read;
+    state.remaining_data -= file_data_bytes.len();
 
     if state.remaining_data != 0 {
       // We still have some data to read, so we keep the parser state.

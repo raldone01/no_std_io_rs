@@ -5,6 +5,7 @@ mod limited_vec;
 mod read;
 mod read_all;
 mod seek;
+mod unwrap_infallible;
 mod write;
 mod write_all;
 
@@ -15,5 +16,6 @@ pub use limited_vec::*;
 pub use read::*;
 pub use read_all::*;
 pub use seek::*;
+pub use unwrap_infallible::*;
 pub use write::*;
 pub use write_all::*;

@@ -1,4 +1,4 @@
-use core::{num::ParseIntError, panic};
+use core::num::ParseIntError;
 
 use alloc::{collections::TryReserveError, string::String, vec::Vec};
 

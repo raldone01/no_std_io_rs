@@ -39,8 +39,12 @@ impl<'a, R: BufferedRead + ?Sized> ForkedBufferedReader<'a, R> {
     Ok(sliced_buffer)
   }
 
-  fn read_buffered_internal(&mut self, peek: bool) -> Result<&[u8], R::UnderlyingReadExactError> {
-    let full_buffer = self.buffered_reader.peek_buffered()?;
+  fn read_buffered_internal(
+    &mut self,
+    maximum_byte_count: usize,
+    peek: bool,
+  ) -> Result<&[u8], R::UnderlyingReadExactError> {
+    let full_buffer = self.buffered_reader.peek_buffered(maximum_byte_count)?;
     let sliced_buffer = &full_buffer[self.position..];
     if !peek {
       self.position += sliced_buffer.len();
@@ -60,19 +64,34 @@ impl<'a, R: BufferedRead + ?Sized> BufferedRead for ForkedBufferedReader<'a, R> 
     ForkedBufferedReader::new(self.buffered_reader, self.position)
   }
 
-  fn skip(
+  fn skip_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<usize, Self::UnderlyingReadExactError> {
+    self
+      .read_buffered_internal(maximum_byte_count, false)
+      .map(|bytes| bytes.len())
+  }
+
+  fn read_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(maximum_byte_count, false)
+  }
+
+  fn peek_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(maximum_byte_count, true)
+  }
+
+  fn skip_exact(
     &mut self,
     byte_count: usize,
   ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>> {
     self.read_exact(byte_count).map(|_| ())
-  }
-
-  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    self.read_buffered_internal(false)
-  }
-
-  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    self.read_buffered_internal(true)
   }
 
   fn read_exact(

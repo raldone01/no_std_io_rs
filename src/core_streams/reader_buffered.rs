@@ -102,9 +102,10 @@ impl<R: Read, B: BackingBuffer + AsMut<[u8]>> BufferedReader<R, B> {
 
   fn read_buffered_internal(
     &mut self,
+    maximum_byte_count: usize,
     peek: bool,
   ) -> Result<&[u8], BufferedReaderReadError<R::ReadError, B::ResizeError>> {
-    let buffer_size = self.buffer.len();
+    let buffer_size = self.buffer.len().min(maximum_byte_count);
     self
       .read_exact_internal(buffer_size, false, peek)
       .map_err(|e| match e {
@@ -181,18 +182,38 @@ impl<R: Read, B: BackingBuffer + AsMut<[u8]>> BufferedRead for BufferedReader<R,
     ForkedBufferedReader::new(self, 0)
   }
 
-  fn skip(&mut self, byte_count: usize) -> Result<(), ReadExactError<Self::ReadError>> {
+  fn skip_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<usize, Self::UnderlyingReadExactError> {
+    let bytes_to_skip = self.bytes_in_buffer.min(maximum_byte_count);
+    self.skip_exact(bytes_to_skip).map_err(|e| match e {
+      ReadExactError::UnexpectedEof { .. } => {
+        unreachable!("BUG: Unexpected EOF in buffered skip")
+      },
+      ReadExactError::Io(err) => err,
+    })?;
+    Ok(bytes_to_skip)
+  }
+
+  fn read_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(maximum_byte_count, false)
+  }
+
+  fn peek_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(maximum_byte_count, true)
+  }
+
+  fn skip_exact(&mut self, byte_count: usize) -> Result<(), ReadExactError<Self::ReadError>> {
     self
       .read_exact_internal(byte_count, true, false)
       .map(|_| ())
-  }
-
-  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    self.read_buffered_internal(false)
-  }
-
-  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    self.read_buffered_internal(true)
   }
 
   fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<Self::ReadError>> {

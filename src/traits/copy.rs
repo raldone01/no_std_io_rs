@@ -114,7 +114,7 @@ pub trait CopyBuffered: BufferedRead {
     let mut total_bytes = 0;
 
     loop {
-      let bytes_read = self.read_buffered().map_err(CopyError::IoRead)?;
+      let bytes_read = self.read_buffered(usize::MAX).map_err(CopyError::IoRead)?;
       if bytes_read.is_empty() {
         break; // EOF
       }
@@ -140,7 +140,9 @@ pub trait CopyBuffered: BufferedRead {
     let mut total_bytes = 0;
 
     loop {
-      let bytes_read = self.peek_buffered().map_err(CopyUntilError::IoRead)?;
+      let bytes_read = self
+        .peek_buffered(usize::MAX)
+        .map_err(CopyUntilError::IoRead)?;
       if bytes_read.is_empty() {
         return Err(CopyUntilError::DelimiterNotFound {
           bytes_read: total_bytes,
@@ -166,7 +168,7 @@ pub trait CopyBuffered: BufferedRead {
         .map_err(CopyUntilError::IoWrite)?;
       total_bytes += bytes_read_count;
       self
-        .skip(bytes_read_count + (!write_delimiter && delimiter_found) as usize)
+        .skip_exact(bytes_read_count + (!write_delimiter && delimiter_found) as usize)
         .map_err(|e| match e {
           ReadExactError::UnexpectedEof { .. } => {
             unreachable!("BUG: We are only skipping bytes that are in the buffer.")

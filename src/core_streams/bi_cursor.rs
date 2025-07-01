@@ -187,9 +187,10 @@ impl<B: AsRef<[u8]>> Cursor<B> {
 
   fn read_buffered_internal(
     &mut self,
+    maximum_byte_count: usize,
     peek: bool,
   ) -> Result<&[u8], <Self as BufferedRead>::UnderlyingReadExactError> {
-    let remaining = self.remaining();
+    let remaining = self.remaining().min(maximum_byte_count);
     match self.read_exact_internal(remaining, peek) {
       Ok(bytes) => Ok(bytes),
       Err(ReadExactError::UnexpectedEof { .. }) => unreachable!(
@@ -211,17 +212,32 @@ impl<B: AsRef<[u8]>> BufferedRead for Cursor<B> {
     ForkedBufferedReader::new(self, 0)
   }
 
-  fn skip(&mut self, byte_count: usize) -> Result<(), ReadExactError<Self::ReadError>> {
+  fn skip_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<usize, Self::UnderlyingReadExactError> {
+    let bytes_to_skip = self.remaining().min(maximum_byte_count);
+    self.position += bytes_to_skip;
+    Ok(bytes_to_skip)
+  }
+
+  fn read_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(maximum_byte_count, false)
+  }
+
+  fn peek_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    self.read_buffered_internal(maximum_byte_count, true)
+  }
+
+  fn skip_exact(&mut self, byte_count: usize) -> Result<(), ReadExactError<Self::ReadError>> {
     self.position += byte_count;
     Ok(())
-  }
-
-  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    self.read_buffered_internal(false)
-  }
-
-  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    self.read_buffered_internal(true)
   }
 
   fn read_exact(&mut self, byte_count: usize) -> Result<&[u8], ReadExactError<Self::ReadError>> {

@@ -38,17 +38,31 @@ pub trait BufferedRead: Read {
   #[must_use]
   fn fork_reader(&mut self) -> Self::ForkedBufferedReaderImplementation<'_>;
 
+  /// Consumes at most `maximum_byte_count` bytes from the underlying reader potentially avoiding a copy to the internal buffer.
+  fn skip_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<usize, Self::UnderlyingReadExactError>;
+
+  /// Efficiently utilizes the internal buffer to read bytes from the underlying reader.
+  /// It reads at most `maximum_byte_count` bytes, but may read fewer if the buffer is smaller.
+  fn read_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError>;
+
+  /// Efficiently utilizes the internal buffer to peek bytes from the underlying reader.
+  /// It reads at most `maximum_byte_count` bytes, but may read fewer if the buffer is smaller.
+  fn peek_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError>;
+
   /// Consumes `byte_count` bytes from the underlying reader potentially avoiding a copy to the internal buffer.
-  fn skip(
+  fn skip_exact(
     &mut self,
     byte_count: usize,
   ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>>;
-
-  /// Efficiently utilizes the internal buffer to read bytes from the underlying reader.
-  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError>;
-
-  /// Efficiently utilizes the internal buffer to peek bytes from the underlying reader.
-  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError>;
 
   /// Reads exactly `byte_count` bytes from the underlying reader consuming them.
   fn read_exact(
@@ -79,19 +93,32 @@ macro_rules! impl_buffered_read_for_wrapper {
                   ForkedBufferedReader::new(self, 0)
               }
 
-              fn skip(
-                  &mut self,
-                  byte_count: usize,
+              fn skip_buffered(
+                &mut self,
+                maximum_byte_count: usize,
+              ) -> Result<usize, Self::UnderlyingReadExactError> {
+                  self.$accessor().skip_buffered(maximum_byte_count)
+              }
+
+              fn read_buffered(
+                &mut self,
+                maximum_byte_count: usize,
+              ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+                  self.$accessor().read_buffered(maximum_byte_count)
+              }
+
+              fn peek_buffered(
+                &mut self,
+                maximum_byte_count: usize,
+              ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+                  self.$accessor().peek_buffered(maximum_byte_count)
+              }
+
+              fn skip_exact(
+                &mut self,
+                byte_count: usize,
               ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>> {
-                  self.$accessor().skip(byte_count)
-              }
-
-              fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-                  self.$accessor().read_buffered()
-              }
-
-              fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-                  self.$accessor().peek_buffered()
+                  self.$accessor().skip_exact(byte_count)
               }
 
               fn read_exact(
@@ -132,26 +159,39 @@ impl BufferedRead for &[u8] {
     ForkedBufferedReader::new(self, 0)
   }
 
-  fn skip(
+  fn skip_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<usize, Self::UnderlyingReadExactError> {
+    let bytes_to_skip = self.len().min(maximum_byte_count);
+    *self = &self[bytes_to_skip..];
+    Ok(bytes_to_skip)
+  }
+
+  fn read_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    let byte_count = self.len().min(maximum_byte_count);
+    let bytes = &self[..byte_count];
+    *self = &self[byte_count..];
+    Ok(bytes)
+  }
+
+  fn peek_buffered(
+    &mut self,
+    maximum_byte_count: usize,
+  ) -> Result<&[u8], Self::UnderlyingReadExactError> {
+    let byte_count = self.len().min(maximum_byte_count);
+    Ok(&self[..byte_count])
+  }
+
+  fn skip_exact(
     &mut self,
     byte_count: usize,
   ) -> Result<(), ReadExactError<Self::UnderlyingReadExactError>> {
     self.read_exact(byte_count)?;
     Ok(())
-  }
-
-  fn read_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    let byte_count = self.len();
-    self.read_exact(byte_count).map_err(|e| match e {
-      ReadExactError::UnexpectedEof { .. } => {
-        unreachable!("BUG: Unexpected EOF in slice read_buffered")
-      },
-      ReadExactError::Io(err) => err,
-    })
-  }
-
-  fn peek_buffered(&mut self) -> Result<&[u8], Self::UnderlyingReadExactError> {
-    Ok(self)
   }
 
   fn read_exact(

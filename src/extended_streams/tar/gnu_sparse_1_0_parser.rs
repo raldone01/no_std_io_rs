@@ -5,7 +5,8 @@ use crate::{
     CommonParseError, CorruptField, IgnoreTarViolationHandler, SparseFileInstruction,
     TarParserError, TarViolationHandler,
   },
-  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, LimitedVec, WriteAllError,
+  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, LimitedVec, UnwrapInfallible,
+  WriteAllError,
 };
 
 const fn max_string_length_from_limit(limit: usize, radix: usize) -> usize {
@@ -234,11 +235,10 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
     mut state: StateSkippingPadding,
   ) -> Result<ParserState, TarParserError> {
     // Skip the remaining padding
-    let bytes_to_skip = state.remaining_padding.min(cursor.remaining());
-    cursor
-      .skip(bytes_to_skip)
-      .expect("BUG: Incremental padding skipping failed");
-    state.remaining_padding -= bytes_to_skip;
+    let skipped_bytes = cursor
+      .skip_buffered(state.remaining_padding)
+      .unwrap_infallible();
+    state.remaining_padding -= skipped_bytes;
 
     if state.remaining_padding == 0 {
       Ok(ParserState::Finished)
@@ -255,6 +255,7 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
     cursor: &mut Cursor<&[u8]>,
     sparse_file_instructions: &mut LimitedVec<SparseFileInstruction>,
   ) -> Result<bool, TarParserError> {
+    // TODO: loop here to drive the parser until all available data is consumed.
     let parser_state = core::mem::replace(&mut self.state, ParserState::Finished);
 
     let initial_cursor_position = cursor.position();
