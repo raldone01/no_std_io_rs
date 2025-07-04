@@ -12,7 +12,7 @@ use alloc::{
 
 use crate::{BackingBuffer, LimitedBackingBufferError, ResizeError};
 
-#[derive(Debug, Hash, Clone)]
+#[derive(Debug, Hash, Clone, Eq, Ord)]
 pub struct LimitedVec<T> {
   vec: Vec<T>,
   max_len: usize,
@@ -464,6 +464,18 @@ impl<T> AsRef<[T]> for LimitedVec<T> {
 impl<T> AsMut<[T]> for LimitedVec<T> {
   fn as_mut(&mut self) -> &mut [T] {
     self
+  }
+}
+
+impl<T: PartialEq> PartialEq for LimitedVec<T> {
+  fn eq(&self, other: &Self) -> bool {
+    self.vec == other.vec
+  }
+}
+
+impl<T: PartialOrd> PartialOrd for LimitedVec<T> {
+  fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    self.vec.partial_cmp(&other.vec)
   }
 }
 

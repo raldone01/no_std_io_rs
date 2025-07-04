@@ -1,9 +1,6 @@
 use core::marker::PhantomData;
 
-use alloc::{
-  string::{String, ToString},
-  vec::Vec,
-};
+use alloc::string::{String, ToString};
 
 use hashbrown::HashMap;
 
@@ -144,7 +141,7 @@ pub struct PaxParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
   gnu_sprase_major: PaxConfidentValue<u32>,
   gnu_sparse_minor: PaxConfidentValue<u32>,
   gnu_sparse_realsize_0_01: PaxConfidentValue<usize>,
-  gnu_sparse_map_local: Vec<SparseFileInstruction>,
+  gnu_sparse_map_local: LimitedVec<SparseFileInstruction>,
   mtime: PaxConfidentValue<TimeStamp>,
   atime: PaxConfidentValue<TimeStamp>,
   ctime: PaxConfidentValue<TimeStamp>,
@@ -167,7 +164,7 @@ pub struct PaxParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
 
 impl<VH: TarViolationHandler> Default for PaxParser<VH> {
   fn default() -> Self {
-    PaxParser::new(HashMap::new(), usize::MAX)
+    PaxParser::new(HashMap::new(), usize::MAX, usize::MAX)
   }
 }
 
@@ -176,6 +173,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   pub fn new(
     initial_global_extended_attributes: HashMap<String, String>,
     max_pax_key_value_length: usize,
+    max_sparse_file_instructions: usize,
   ) -> Self {
     let mut selv = Self {
       global_attributes: HashMap::new(),
@@ -186,7 +184,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       gnu_sprase_major: PaxConfidentValue::default(),
       gnu_sparse_minor: PaxConfidentValue::default(),
       gnu_sparse_realsize_0_01: PaxConfidentValue::default(),
-      gnu_sparse_map_local: Vec::new(),
+      gnu_sparse_map_local: LimitedVec::new(max_sparse_file_instructions),
       mtime: PaxConfidentValue::default(),
       atime: PaxConfidentValue::default(),
       ctime: PaxConfidentValue::default(),
@@ -232,17 +230,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   /// Parses a time value in the format "seconds.nanoseconds" or "seconds"
   fn parse_time(value: &str) -> Option<TimeStamp> {
-    let parts: Vec<&str> = value.split('.').collect();
-    if parts.is_empty() || parts.len() > 2 {
-      return None; // Invalid format
-    }
+    let mut parts = value.split('.');
 
-    let seconds = parts[0].parse::<u64>().ok()?;
-    let nanoseconds = if parts.len() == 2 {
-      parts[1].parse::<u32>().ok()?
-    } else {
-      0 // Default to 0 nanoseconds if not provided
-    };
+    let seconds = parts.next()?.parse::<u64>().ok()?;
+    // Default to 0 nanoseconds if not provided
+    let nanoseconds = parts
+      .next()
+      .and_then(|s| s.parse::<u32>().ok())
+      .unwrap_or(0);
 
     Some(TimeStamp {
       seconds_since_epoch: seconds,
@@ -268,8 +263,8 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
               .or(self.gnu_sparse_realsize_0_01.get_with_confidence()),
           ));
         if sparse_format == SparseFormat::Gnu0_0 || sparse_format == SparseFormat::Gnu0_1 {
-          inode_builder.sparse_file_instructions =
-            LimitedVec::from_vec(usize::MAX, self.gnu_sparse_map_local.clone());
+          // TODO: avoid clone
+          inode_builder.sparse_file_instructions = self.gnu_sparse_map_local.clone();
         }
       }
     }
@@ -770,7 +765,7 @@ mod tests {
     globals.insert("gname".to_string(), "wheel".to_string());
     globals.insert("uid".to_string(), "0".to_string());
 
-    let parser = PaxParser::<IgnoreTarViolationHandler>::new(globals, usize::MAX);
+    let parser = PaxParser::<IgnoreTarViolationHandler>::new(globals, usize::MAX, usize::MAX);
 
     assert_eq!(
       parser.gname.get_with_confidence(),
@@ -858,20 +853,23 @@ mod tests {
     let data = b"45 GNU.sparse.map=1024,512,8192,2048,16384,0\n";
     drive_parser(&mut parser, data, false).unwrap();
 
-    let expected = vec![
-      SparseFileInstruction {
-        offset_before: 1024,
-        data_size: 512,
-      },
-      SparseFileInstruction {
-        offset_before: 8192,
-        data_size: 2048,
-      },
-      SparseFileInstruction {
-        offset_before: 16384,
-        data_size: 0,
-      },
-    ];
+    let expected = LimitedVec::from_vec(
+      usize::MAX,
+      vec![
+        SparseFileInstruction {
+          offset_before: 1024,
+          data_size: 512,
+        },
+        SparseFileInstruction {
+          offset_before: 8192,
+          data_size: 2048,
+        },
+        SparseFileInstruction {
+          offset_before: 16384,
+          data_size: 0,
+        },
+      ],
+    );
     assert_eq!(parser.gnu_sparse_map_local, expected);
   }
 

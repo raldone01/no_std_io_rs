@@ -505,6 +505,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       pax_parser: PaxParser::new(
         options.initial_global_extended_attributes,
         options.tar_parser_limits.max_pax_key_value_length,
+        options.tar_parser_limits.max_sparse_file_instructions,
       ),
       inode_state: InodeBuilder::new(options.tar_parser_limits.max_sparse_file_instructions),
       header_buffer: Cursor::new([0; BLOCK_SIZE]),
