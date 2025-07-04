@@ -120,7 +120,7 @@ pub enum FileEntry {
   Fifo,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct SparseFileInstruction {
   pub offset_before: u64,
   pub data_size: u64,

@@ -15,7 +15,7 @@ use crate::{
   extended_streams::tar::{
     confident_value::ConfidentValue,
     gnu_sparse_1_0_parser::GnuSparse1_0Parser,
-    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
+    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser, PaxParserError},
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
       GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
@@ -38,8 +38,6 @@ pub struct TarParserLimits {
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum GeneralParseError {
-  #[error("Protocol violation: {0}")]
-  ProtocolViolation(&'static str),
   #[error("Invalid octal number: {0}")]
   InvalidOctalNumber(#[from] ParseOctalError),
   #[error("Invalid UTF-8 string: {0}")]
@@ -78,7 +76,6 @@ pub enum CorruptFieldContext {
   PaxKvLength,
   PaxKvValue,
   PaxKvKey,
-  PaxKvMissingNewline,
 }
 
 impl Display for CorruptFieldContext {
@@ -108,9 +105,6 @@ impl Display for CorruptFieldContext {
       CorruptFieldContext::PaxKvLength => write!(f, "pax.length_field"),
       CorruptFieldContext::PaxKvValue => write!(f, "pax.value_field"),
       CorruptFieldContext::PaxKvKey => write!(f, "pax.key_field"),
-      CorruptFieldContext::PaxKvMissingNewline => {
-        write!(f, "pax.key_value_pair.missing_newline")
-      },
     }
   }
 }
@@ -154,6 +148,8 @@ impl LimitExceededContext {
 pub enum TarParserError {
   #[error("Tar header parser error: {0}")]
   HeaderParserError(#[from] TarHeaderParserError),
+  #[error("PAX parser error: {0}")]
+  PaxParserError(#[from] PaxParserError),
   #[error("Limit of {limit} {unit} exceeded while parsing: {context}", unit = context.context_unit().1, context = context.context_unit().0)]
   LimitExceeded {
     limit: usize,
@@ -180,6 +176,37 @@ impl TarParserError {
       .into();
       let _fatal_error = vh.handle(&err);
       err
+    }
+  }
+
+  /// Handles a potential violation in result form by calling the violation handler.
+  pub(crate) fn hpv<T, VH: TarViolationHandler, E: Into<TarParserError>>(
+    violation_handler: &mut VH,
+    operation_result: Result<T, E>,
+  ) -> Result<Option<T>, TarParserError> {
+    match operation_result {
+      Ok(v) => Ok(Some(v)),
+      Err(e) => {
+        let e = e.into();
+        if violation_handler.handle(&e) {
+          Ok(None)
+        } else {
+          Err(e)
+        }
+      },
+    }
+  }
+
+  /// Handles a violation in error form by calling the violation handler.
+  pub(crate) fn hv<VH: TarViolationHandler, E: Into<TarParserError>>(
+    violation_handler: &mut VH,
+    error: E,
+  ) -> Result<(), TarParserError> {
+    let e = error.into();
+    if violation_handler.handle(&e) {
+      Ok(())
+    } else {
+      Err(e)
     }
   }
 }
@@ -488,13 +515,17 @@ impl From<InodeBuilder> for RegularFileEntry {
 
 impl<VH: TarViolationHandler + Default> Default for TarParser<VH> {
   fn default() -> Self {
-    Self::new(TarParserOptions::default(), VH::default())
+    Self::try_new(TarParserOptions::default(), VH::default())
+      .expect("BUG: Default TarParser should always be creatable")
   }
 }
 
 impl<VH: TarViolationHandler> TarParser<VH> {
-  pub fn new(options: TarParserOptions, violation_handler: VH) -> Self {
-    Self {
+  pub fn try_new(
+    options: TarParserOptions,
+    mut violation_handler: VH,
+  ) -> Result<Self, TarParserError> {
+    Ok(Self {
       extracted_files: Default::default(),
 
       found_type_flags: Default::default(),
@@ -502,18 +533,19 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       keep_only_last: options.keep_only_last,
 
       parser_state: Default::default(),
-      pax_parser: PaxParser::new(
+      pax_parser: PaxParser::try_new(
+        &mut violation_handler,
         options.initial_global_extended_attributes,
         options.tar_parser_limits.max_pax_key_value_length,
         options.tar_parser_limits.max_sparse_file_instructions,
-      ),
+      )?,
       inode_state: InodeBuilder::new(options.tar_parser_limits.max_sparse_file_instructions),
       header_buffer: Cursor::new([0; BLOCK_SIZE]),
       sparse_parser: GnuSparse1_0Parser::new(),
 
       limits: options.tar_parser_limits,
       violation_handler,
-    }
+    })
   }
 
   fn recover_internal(&mut self) -> InodeBuilder {
@@ -658,24 +690,6 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     }
   }
 
-  /// Handles a potential violation by calling the violation handler.
-  fn hpv<T, E: Into<TarParserError>>(
-    violation_handler: &mut VH,
-    operation_result: Result<T, E>,
-  ) -> Result<Option<T>, TarParserError> {
-    match operation_result {
-      Ok(v) => Ok(Some(v)),
-      Err(e) => {
-        let e = e.into();
-        if violation_handler.handle(&e) {
-          Ok(None)
-        } else {
-          Err(e)
-        }
-      },
-    }
-  }
-
   #[must_use]
   fn map_corrupt_header_field<T: Into<GeneralParseError>>(
     field: CorruptFieldContext,
@@ -693,7 +707,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     old_header: &V7Header,
   ) -> Result<TarTypeFlag, TarParserError> {
     // verify checksum
-    Self::hpv(
+    TarParserError::hpv(
       vh,
       old_header
         .verify_checksum()
@@ -708,7 +722,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     }
 
     // parse the information from the old header
-    Self::hpv(
+    TarParserError::hpv(
       vh,
       inode_state
         .data_after_header_size
@@ -719,7 +733,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     )?;
 
     if typeflag.is_file_like() {
-      Self::hpv(
+      TarParserError::hpv(
         vh,
         inode_state
           .file_path
@@ -728,7 +742,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
             CorruptFieldContext::HeaderName,
           )),
       )?;
-      Self::hpv(
+      TarParserError::hpv(
         vh,
         inode_state
           .mode
@@ -737,7 +751,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
             CorruptFieldContext::HeaderMode,
           )),
       )?;
-      Self::hpv(
+      TarParserError::hpv(
         vh,
         inode_state
           .uid
@@ -746,7 +760,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
             CorruptFieldContext::HeaderUid,
           )),
       )?;
-      Self::hpv(
+      TarParserError::hpv(
         vh,
         inode_state
           .gid
@@ -756,7 +770,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           )),
       )?;
 
-      Self::hpv(
+      TarParserError::hpv(
         vh,
         inode_state
           .mtime
@@ -768,7 +782,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     }
 
     if typeflag.is_link_like() {
-      Self::hpv(
+      TarParserError::hpv(
         vh,
         inode_state
           .link_target
@@ -789,7 +803,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     inode_state: &mut InodeBuilder,
     common_header_additions: &CommonHeaderAdditions,
   ) -> Result<(), TarParserError> {
-    Self::hpv(
+    TarParserError::hpv(
       vh,
       inode_state
         .uname
@@ -800,7 +814,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           CorruptFieldContext::HeaderUname,
         )),
     )?;
-    Self::hpv(
+    TarParserError::hpv(
       vh,
       inode_state
         .gname
@@ -811,7 +825,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           CorruptFieldContext::HeaderGname,
         )),
     )?;
-    if let Some(dev_major) = Self::hpv(
+    if let Some(dev_major) = TarParserError::hpv(
       vh,
       common_header_additions
         .parse_dev_major()
@@ -821,7 +835,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     )? {
       inode_state.dev_major = dev_major;
     }
-    if let Some(dev_minor) = Self::hpv(
+    if let Some(dev_minor) = TarParserError::hpv(
       vh,
       common_header_additions
         .parse_dev_minor()
@@ -913,18 +927,16 @@ impl<VH: TarViolationHandler> TarParser<VH> {
                 }
               },
               Err(parse_error) => {
-                Self::hpv(
+                TarParserError::hv(
                   vh,
-                  Result::<(), _>::Err(Self::map_corrupt_header_field(
-                    CorruptFieldContext::HeaderPrefix,
-                  )(parse_error)),
+                  Self::map_corrupt_header_field(CorruptFieldContext::HeaderPrefix)(parse_error),
                 )?;
                 potential_path
               },
             };
             self.inode_state.file_path.set(TarConfidence::Ustar, joined);
           } else {
-            Self::hpv(
+            TarParserError::hpv(
               vh,
               self
                 .inode_state
@@ -962,7 +974,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         let vh = &mut self.violation_handler;
 
         if typeflag.is_file_like() {
-          Self::hpv(
+          TarParserError::hpv(
             vh,
             self
               .inode_state
@@ -972,7 +984,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
                 CorruptFieldContext::HeaderAtime,
               )),
           )?;
-          Self::hpv(
+          TarParserError::hpv(
             vh,
             self
               .inode_state
@@ -991,7 +1003,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
         }
 
-        Self::hpv(
+        TarParserError::hpv(
           vh,
           self
             .inode_state

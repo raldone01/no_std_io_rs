@@ -3,6 +3,7 @@ use core::marker::PhantomData;
 use alloc::string::{String, ToString};
 
 use hashbrown::HashMap;
+use thiserror::Error;
 
 use crate::{
   extended_streams::tar::{
@@ -15,15 +16,28 @@ use crate::{
       },
       ATIME, CTIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
     },
-    CorruptFieldContext, GeneralParseError, IgnoreTarViolationHandler, InodeBuilder,
-    InodeConfidentValue, LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError,
-    TarViolationHandler, TimeStamp,
+    CorruptFieldContext, IgnoreTarViolationHandler, InodeBuilder, InodeConfidentValue,
+    LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError, TarViolationHandler,
+    TimeStamp,
   },
   BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
   UnwrapInfallible, WriteAllError,
 };
 
 // TODO: Limit the hash maps/pax_key_value pair count to a reasonable number
+// TODO: properly handle ingest_attribute errors and invoke the violation handler
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum PaxParserError {
+  #[error("A PAX key-value pair is missing a newline at the end")]
+  KeyValuePairMissingNewline,
+  #[error("A well-known PAX key '{key}' appeared in the wrong context. Expected: {expected_context:?}, Actual: {actual_context:?}")]
+  WellKnownKeyAppearedInWrongPaxContext {
+    key: &'static str,
+    expected_context: PaxConfidence,
+    actual_context: PaxConfidence,
+  },
+}
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum PaxConfidence {
@@ -162,19 +176,26 @@ pub struct PaxParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
   _violation_handler: PhantomData<VH>,
 }
 
-impl<VH: TarViolationHandler> Default for PaxParser<VH> {
+impl<VH: TarViolationHandler + Default> Default for PaxParser<VH> {
   fn default() -> Self {
-    PaxParser::new(HashMap::new(), usize::MAX, usize::MAX)
+    let mut tar_violation_handler = VH::default();
+    PaxParser::try_new(
+      &mut tar_violation_handler,
+      HashMap::new(),
+      usize::MAX,
+      usize::MAX,
+    ).expect("BUG: With an empty initial global attributes, the PaxParser should always be able to be created")
   }
 }
 
 impl<VH: TarViolationHandler> PaxParser<VH> {
   #[must_use]
-  pub fn new(
+  pub fn try_new(
+    vh: &mut VH,
     initial_global_extended_attributes: HashMap<String, String>,
     max_pax_key_value_length: usize,
     max_sparse_file_instructions: usize,
-  ) -> Self {
+  ) -> Result<Self, TarParserError> {
     let mut selv = Self {
       global_attributes: HashMap::new(),
       unparsed_global_attributes: HashMap::new(),
@@ -202,9 +223,9 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       _violation_handler: PhantomData,
     };
     for (key, value) in initial_global_extended_attributes {
-      selv.ingest_attribute(PaxConfidence::GLOBAL, key, value);
+      selv.ingest_attribute(vh, PaxConfidence::GLOBAL, key, value)?;
     }
-    selv
+    Ok(selv)
   }
 
   #[must_use]
@@ -362,7 +383,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   /// The sparse map is a series of comma-separated decimal values
   /// in the format `offset,size[,offset,size,...]` (0.1)
-  fn parse_gnu_sparse_map_0_1(&mut self, value: String) {
+  fn parse_gnu_sparse_map_0_1(&mut self, value: String) -> Result<(), TarParserError> {
     let parts = value.split(',');
     let mut offset = None;
     for (i, part) in parts.enumerate() {
@@ -376,16 +397,23 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       } else {
         // This is a size
         if let (Some(offset), Ok(parsed_data_size)) = (offset, part.parse::<u64>()) {
-          self.gnu_sparse_map_local.push(SparseFileInstruction {
-            offset_before: offset,
-            data_size: parsed_data_size,
-          });
+          self
+            .gnu_sparse_map_local
+            .push(SparseFileInstruction {
+              offset_before: offset,
+              data_size: parsed_data_size,
+            })
+            .map_err(|_| TarParserError::LimitExceeded {
+              limit: self.gnu_sparse_map_local.max_len(),
+              context: LimitExceededContext::TooManySparseFileInstructions,
+            })?;
         } else {
           // TODO: log warning about invalid size
         }
         offset = None; // Reset offset for the next pair
       }
     }
+    Ok(())
   }
 
   pub fn drain_local_unparsed_attributes(&mut self) -> HashMap<String, String> {
@@ -400,7 +428,13 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     local_unparsed_attributes
   }
 
-  fn ingest_attribute(&mut self, confidence: PaxConfidence, key: String, value: String) {
+  fn ingest_attribute(
+    &mut self,
+    vh: &mut VH,
+    confidence: PaxConfidence,
+    key: String,
+    value: String,
+  ) -> Result<(), TarParserError> {
     match key.as_str() {
       GNU_SPARSE_NAME_01_01 => {
         if confidence == PaxConfidence::LOCAL {
@@ -408,7 +442,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
             .gnu_sparse_name_01_01
             .insert_with_confidence(confidence, value);
         } else {
-          // TODO: log warning
+          TarParserError::hv(
+            vh,
+            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+              key: GNU_SPARSE_NAME_01_01,
+              expected_context: PaxConfidence::LOCAL,
+              actual_context: confidence,
+            },
+          )?;
         }
       },
       GNU_SPARSE_REALSIZE_1_0 => {
@@ -419,7 +460,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
               .insert_with_confidence(confidence, parsed_value);
           }
         } else {
-          // TODO: log warning
+          TarParserError::hv(
+            vh,
+            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+              key: GNU_SPARSE_REALSIZE_1_0,
+              expected_context: PaxConfidence::LOCAL,
+              actual_context: confidence,
+            },
+          )?;
         }
       },
       GNU_SPARSE_MAJOR => {
@@ -444,11 +492,27 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
               .insert_with_confidence(confidence, parsed_value);
           }
         } else {
-          // TODO: log warning
+          TarParserError::hv(
+            vh,
+            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+              key: GNU_SPARSE_REALSIZE_0_01,
+              expected_context: PaxConfidence::LOCAL,
+              actual_context: confidence,
+            },
+          )?;
         }
       },
       GNU_SPARSE_MAP_NUM_BLOCKS_0_01 => {
-        // This is a user controlled value so we don't reserve capacity
+        // This is a user controlled value so we only try to reserve the space
+        if let Ok(new_len) = value.parse::<usize>() {
+          self
+            .gnu_sparse_map_local
+            .resize(new_len, SparseFileInstruction::default())
+            .map_err(|_| TarParserError::LimitExceeded {
+              limit: self.gnu_sparse_map_local.max_len(),
+              context: LimitExceededContext::TooManySparseFileInstructions,
+            })?;
+        }
       },
       GNU_SPARSE_DATA_BLOCK_OFFSET_0_0 => {
         if confidence == PaxConfidence::LOCAL {
@@ -463,7 +527,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           }
           self.try_finish_sparse_instruction();
         } else {
-          // TODO: log warning
+          TarParserError::hv(
+            vh,
+            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+              key: GNU_SPARSE_DATA_BLOCK_OFFSET_0_0,
+              expected_context: PaxConfidence::LOCAL,
+              actual_context: confidence,
+            },
+          )?;
         }
       },
       GNU_SPARSE_DATA_BLOCK_SIZE_0_0 => {
@@ -479,7 +550,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           }
           self.try_finish_sparse_instruction();
         } else {
-          // TODO: log warning
+          TarParserError::hv(
+            vh,
+            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+              key: GNU_SPARSE_DATA_BLOCK_SIZE_0_0,
+              expected_context: PaxConfidence::LOCAL,
+              actual_context: confidence,
+            },
+          )?;
         }
       },
       GNU_SPARSE_MAP_0_1 => {
@@ -492,7 +570,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
             .insert_with_confidence(PaxConfidence::LOCAL, 1);
           self.parse_gnu_sparse_map_0_1(value);
         } else {
-          // TODO: log warning
+          TarParserError::hv(
+            vh,
+            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+              key: GNU_SPARSE_MAP_0_1,
+              expected_context: PaxConfidence::LOCAL,
+              actual_context: confidence,
+            },
+          )?;
         }
       },
       ATIME => {
@@ -551,6 +636,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         }
       },
     }
+    Ok(())
   }
 
   /// "%d %s=%s\n", <length>, <keyword>, <value>
@@ -696,10 +782,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     let newline_char = cursor.full_buffer()[cursor.position()];
     if newline_char != b'\n' {
       // Record must end in a newline, so length of value part must be at least 1.
-      let err = TarParserError::CorruptField {
-        field: CorruptFieldContext::PaxKvMissingNewline,
-        error: GeneralParseError::ProtocolViolation("Pax record must end with a newline"),
-      };
+      let err = PaxParserError::KeyValuePairMissingNewline.into();
       let should_handle = vh.handle(&err);
       if should_handle {
         return Err(err);
@@ -716,7 +799,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       ))?
       .to_string();
 
-    self.ingest_attribute(self.current_pax_mode, state.key, value);
+    self.ingest_attribute(vh, self.current_pax_mode, state.key, value)?;
 
     // Ready for the next key-value pair
     Ok(PaxParserState::default())
@@ -755,9 +838,11 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 mod tests {
   use core::num::ParseIntError;
 
-  use super::*;
+  use alloc::vec;
 
-  use alloc::{string::ToString as _, vec};
+  use crate::extended_streams::tar::GeneralParseError;
+
+  use super::*;
 
   #[test]
   fn test_new_with_initial_global_attributes() {
@@ -765,7 +850,10 @@ mod tests {
     globals.insert("gname".to_string(), "wheel".to_string());
     globals.insert("uid".to_string(), "0".to_string());
 
-    let parser = PaxParser::<IgnoreTarViolationHandler>::new(globals, usize::MAX, usize::MAX);
+    let mut vh = IgnoreTarViolationHandler::default();
+    let parser =
+      PaxParser::<IgnoreTarViolationHandler>::try_new(&mut vh, globals, usize::MAX, usize::MAX)
+        .expect("Failed to create PaxParser with initial global attributes");
 
     assert_eq!(
       parser.gname.get_with_confidence(),
@@ -912,10 +1000,9 @@ mod tests {
     let data = b"11 path=foo ";
     assert_eq!(
       drive_parser(&mut parser, data, false),
-      Err(TarParserError::CorruptField {
-        field: CorruptFieldContext::PaxKvMissingNewline,
-        error: GeneralParseError::ProtocolViolation("Pax record must end with a newline"),
-      })
+      Err(TarParserError::PaxParserError(
+        PaxParserError::KeyValuePairMissingNewline
+      ))
     );
   }
 }
