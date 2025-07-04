@@ -1,12 +1,15 @@
-use core::num::ParseIntError;
+use core::marker::PhantomData;
 
-use alloc::{collections::TryReserveError, string::String, vec::Vec};
+use alloc::{
+  string::{String, ToString},
+  vec::Vec,
+};
 
 use hashbrown::HashMap;
-use thiserror::Error;
 
 use crate::{
   extended_streams::tar::{
+    gnu_sparse_1_0_parser::max_string_length_from_limit,
     tar_constants::pax_keys_well_known::{
       gnu::{
         GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_MAJOR,
@@ -15,27 +18,15 @@ use crate::{
       },
       ATIME, CTIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
     },
-    InodeBuilder, InodeConfidentValue, SparseFileInstruction, SparseFormat, TarParserError,
-    TimeStamp,
+    CorruptFieldContext, GeneralParseError, IgnoreTarViolationHandler, InodeBuilder,
+    InodeConfidentValue, LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError,
+    TarViolationHandler, TimeStamp,
   },
-  CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec, Write,
-  WriteAllError,
+  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
+  UnwrapInfallible, WriteAllError,
 };
 
-/// TODO: rework
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum PaxParserError {
-  #[error(
-    "Corrupt pax length field: The length field is longer than {max_length_field_length} bytes"
-  )]
-  CorruptPaxLength { max_length_field_length: usize },
-  #[error("Corrupt pax length field: {0}")]
-  CorruptPaxLengthInteger(ParseIntError),
-  #[error("Corrupt pax key")]
-  CorruptPaxKey,
-  #[error("Corrupt pax value")]
-  CorruptPaxValue,
-}
+// TODO: Limit the hash maps/pax_key_value pair count to a reasonable number
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum PaxConfidence {
@@ -99,7 +90,7 @@ impl<T> PaxConfidentValue<T> {
 }
 
 /// Maximum length of the length field in bytes
-const MAX_KV_LENGTH_FIELD_LENGTH: usize = 32;
+const MAX_KV_LENGTH_FIELD_LENGTH: usize = max_string_length_from_limit(usize::MAX, 10);
 
 #[derive(Debug, PartialEq, Eq)]
 struct StateParsingNewKV {
@@ -108,15 +99,14 @@ struct StateParsingNewKV {
 
 #[derive(Debug, PartialEq, Eq)]
 struct StateParsingKey {
+  /// The length of the key-value pair.
   length: usize,
-  keyword: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct StateParsingValue {
   key: String,
   length_after_equals: usize,
-  value: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -142,8 +132,7 @@ pub struct SparseFileInstructionBuilder {
 }
 
 /// "%d %s=%s\n", <length>, <keyword>, <value>
-#[derive(Default)]
-pub struct PaxParser {
+pub struct PaxParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
   global_attributes: HashMap<String, String>,
   // unknown/unparsed attributes
   unparsed_global_attributes: HashMap<String, String>,
@@ -171,13 +160,48 @@ pub struct PaxParser {
   state: PaxParserState,
   current_pax_mode: PaxConfidence,
   sparse_instruction_builder: SparseFileInstructionBuilder,
+  pax_key_value_buffer: LimitedVec<u8>,
+
+  _violation_handler: PhantomData<VH>,
 }
 
-impl PaxParser {
+impl<VH: TarViolationHandler> Default for PaxParser<VH> {
+  fn default() -> Self {
+    PaxParser::new(HashMap::new(), usize::MAX)
+  }
+}
+
+impl<VH: TarViolationHandler> PaxParser<VH> {
   #[must_use]
-  pub fn new(initial_global_extended_attributes: HashMap<String, String>) -> Self {
+  pub fn new(
+    initial_global_extended_attributes: HashMap<String, String>,
+    max_pax_key_value_length: usize,
+  ) -> Self {
     let mut selv = Self {
-      ..Default::default()
+      global_attributes: HashMap::new(),
+      unparsed_global_attributes: HashMap::new(),
+      unparsed_attributes: HashMap::new(),
+      gnu_sparse_name_01_01: PaxConfidentValue::default(),
+      gnu_sparse_realsize_1_0: PaxConfidentValue::default(),
+      gnu_sprase_major: PaxConfidentValue::default(),
+      gnu_sparse_minor: PaxConfidentValue::default(),
+      gnu_sparse_realsize_0_01: PaxConfidentValue::default(),
+      gnu_sparse_map_local: Vec::new(),
+      mtime: PaxConfidentValue::default(),
+      atime: PaxConfidentValue::default(),
+      ctime: PaxConfidentValue::default(),
+      gid: PaxConfidentValue::default(),
+      gname: PaxConfidentValue::default(),
+      link_path: PaxConfidentValue::default(),
+      path: PaxConfidentValue::default(),
+      data_size: PaxConfidentValue::default(),
+      uid: PaxConfidentValue::default(),
+      uname: PaxConfidentValue::default(),
+      state: PaxParserState::default(),
+      current_pax_mode: PaxConfidence::LOCAL,
+      sparse_instruction_builder: SparseFileInstructionBuilder::default(),
+      pax_key_value_buffer: LimitedVec::new(max_pax_key_value_length),
+      _violation_handler: PhantomData,
     };
     for (key, value) in initial_global_extended_attributes {
       selv.ingest_attribute(PaxConfidence::GLOBAL, key, value);
@@ -539,20 +563,19 @@ impl PaxParser {
   /// This function parses the length decimal and computes the values for the parsing key state.
   fn state_parsing_new_kv(
     &mut self,
+    vh: &mut VH,
     cursor: &mut Cursor<&[u8]>,
     mut state: StateParsingNewKV,
   ) -> Result<PaxParserState, TarParserError> {
     // Read the length until we hit a space or newline
     let copy_buffered_until_result = cursor.copy_buffered_until(
-      &mut &mut state.kv_cursor,
+      &mut state.kv_cursor,
       false,
       |byte: &u8| *byte == b' ' || *byte == b'\n',
       false,
     );
     match copy_buffered_until_result {
-      Ok(_) => {
-        // Successfully read the length, now we can parse it
-      },
+      Ok(_) => {},
       Err(CopyUntilError::DelimiterNotFound { .. }) => {
         // Not enough data in the current `bytes` slice, preserve state and wait for more
         return Ok(PaxParserState::ParsingNewKV(state));
@@ -562,60 +585,49 @@ impl PaxParser {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
       ) => {
-        return Err(
-          PaxParserError::CorruptPaxLength {
-            max_length_field_length: state.kv_cursor.full_buffer().len(),
-          }
-          .into(),
-        );
+        return Err(TarParserError::LimitExceeded {
+          limit: MAX_KV_LENGTH_FIELD_LENGTH,
+          context: LimitExceededContext::PaxLengthFieldDecimalStringTooLong,
+        });
       },
     }
 
     // Convert the length bytes to a usize
-    let length_str = core::str::from_utf8(state.kv_cursor.before()).unwrap_or("0");
-    let length = match length_str.parse::<usize>() {
-      Ok(value) => value,
-      Err(e) => return Err(PaxParserError::CorruptPaxLengthInteger(e).into()),
-    };
+    let length_str = core::str::from_utf8(state.kv_cursor.before()).map_err(
+      TarParserError::map_corrupt_field(vh, CorruptFieldContext::PaxKvLength),
+    )?;
+    let length = length_str
+      .parse::<usize>()
+      .map_err(TarParserError::map_corrupt_field(
+        vh,
+        CorruptFieldContext::PaxKvLength,
+      ))?;
 
     let length = length.saturating_sub(state.kv_cursor.before().len() + 1);
     if length == 0 {
       // If the length is 0, we are done with this key-value pair
       return Ok(PaxParserState::default());
     }
-    Ok(PaxParserState::ParsingKey(StateParsingKey {
-      length,
-      keyword: Vec::new(),
-    }))
+    self.pax_key_value_buffer.clear();
+    Ok(PaxParserState::ParsingKey(StateParsingKey { length }))
   }
 
   /// Parses the key from the cursor and returns the next state.
   fn state_parsing_key(
     &mut self,
+    vh: &mut VH,
     cursor: &mut Cursor<&[u8]>,
-    mut state: StateParsingKey,
+    state: StateParsingKey,
   ) -> Result<PaxParserState, TarParserError> {
     // Read the length until we hit an equals sign
     let copy_buffered_until_result = cursor.copy_buffered_until(
-      &mut &mut state.keyword,
+      &mut self.pax_key_value_buffer,
       false,
       |byte: &u8| *byte == b'=',
       false,
     );
     match copy_buffered_until_result {
-      Ok(_) => {
-        let length_after_equals = state.length.saturating_sub(state.keyword.len() + 1);
-        if length_after_equals == 0 {
-          // If the length is 0, we are done with this key-value pair
-          return Ok(PaxParserState::default());
-        }
-        let key = String::from_utf8(state.keyword).map_err(|_| PaxParserError::CorruptPaxKey)?;
-        return Ok(PaxParserState::ParsingValue(StateParsingValue {
-          key,
-          length_after_equals,
-          value: Vec::new(),
-        }));
-      },
+      Ok(_) => {},
       Err(CopyUntilError::DelimiterNotFound { .. }) => {
         // Not enough data in the current `bytes` slice, preserve state and wait for more.
         return Ok(PaxParserState::ParsingKey(state));
@@ -623,45 +635,59 @@ impl PaxParser {
       Err(CopyUntilError::IoRead(..)) => unreachable!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
-        | CopyUntilError::IoWrite(WriteAllError::Io(TryReserveError { .. })),
+        | CopyUntilError::IoWrite(WriteAllError::Io(..)),
       ) => {
-        return Err(
-          PaxParserError::CorruptPaxLength {
-            max_length_field_length: state.keyword.len(),
-          }
-          .into(),
-        )
+        let err = TarParserError::LimitExceeded {
+          limit: self.pax_key_value_buffer.max_len(),
+          context: LimitExceededContext::PaxKvKeyTooLong,
+        };
+        // Recovering from this error would require keeping a buffer of the consumed data.
+        let _fatal_error = vh.handle(&err);
+        return Err(err);
       },
     }
+
+    let length_after_equals = state
+      .length
+      .saturating_sub(self.pax_key_value_buffer.len() + 1);
+    if length_after_equals == 0 {
+      // If the length is 0, we are done with this key-value pair
+      return Ok(PaxParserState::default());
+    }
+    let key = core::str::from_utf8(&self.pax_key_value_buffer)
+      .map_err(TarParserError::map_corrupt_field(
+        vh,
+        CorruptFieldContext::PaxKvKey,
+      ))?
+      .to_string();
+    self.pax_key_value_buffer.clear();
+    return Ok(PaxParserState::ParsingValue(StateParsingValue {
+      key,
+      length_after_equals,
+    }));
   }
 
   fn state_parsing_value(
     &mut self,
+    vh: &mut VH,
     cursor: &mut Cursor<&[u8]>,
-    mut state: StateParsingValue,
+    state: StateParsingValue,
   ) -> Result<PaxParserState, TarParserError> {
-    if state.length_after_equals == 0 {
-      // Record must end in a newline, so length of value part must be at least 1.
-      return Err(PaxParserError::CorruptPaxValue.into());
-    }
+    let value_len = state.length_after_equals.saturating_sub(1);
+    let bytes_needed = value_len.saturating_sub(self.pax_key_value_buffer.len());
 
-    let value_len = state.length_after_equals - 1;
-    let bytes_needed = value_len.saturating_sub(state.value.len());
+    let bytes_read = cursor.read_buffered(bytes_needed).unwrap_infallible();
 
-    let bytes_available = cursor.full_buffer().len() - cursor.position();
-    let bytes_to_read = bytes_needed.min(bytes_available);
-
-    if bytes_to_read > 0 {
-      let start = cursor.position();
-      let end = start + bytes_to_read;
-      state
-        .value
-        .extend_from_slice(&cursor.full_buffer()[start..end]);
-      cursor.set_position(end);
-    }
+    self
+      .pax_key_value_buffer
+      .extend_from_slice(bytes_read)
+      .map_err(|_| TarParserError::LimitExceeded {
+        limit: self.pax_key_value_buffer.max_len(),
+        context: LimitExceededContext::PaxKvValueTooLong,
+      })?;
 
     // Check if we have the full value now
-    if state.value.len() < value_len {
+    if self.pax_key_value_buffer.len() < value_len {
       // Not enough data, preserve state
       return Ok(PaxParserState::ParsingValue(state));
     }
@@ -674,43 +700,59 @@ impl PaxParser {
 
     let newline_char = cursor.full_buffer()[cursor.position()];
     if newline_char != b'\n' {
-      return Err(PaxParserError::CorruptPaxValue.into());
+      // Record must end in a newline, so length of value part must be at least 1.
+      let err = TarParserError::CorruptField {
+        field: CorruptFieldContext::PaxKvMissingNewline,
+        error: GeneralParseError::ProtocolViolation("Pax record must end with a newline"),
+      };
+      let should_handle = vh.handle(&err);
+      if should_handle {
+        return Err(err);
+      }
+    } else {
+      cursor.set_position(cursor.position() + 1);
     }
-    cursor.set_position(cursor.position() + 1);
 
     // We have a full key-value pair. Ingest it.
-    let value = String::from_utf8(state.value).map_err(|_| PaxParserError::CorruptPaxValue)?;
+    let value = core::str::from_utf8(&self.pax_key_value_buffer)
+      .map_err(TarParserError::map_corrupt_field(
+        vh,
+        CorruptFieldContext::PaxKvValue,
+      ))?
+      .to_string();
 
     self.ingest_attribute(self.current_pax_mode, state.key, value);
 
     // Ready for the next key-value pair
     Ok(PaxParserState::default())
   }
-}
 
-impl Write for PaxParser {
-  type WriteError = TarParserError;
-  type FlushError = core::convert::Infallible;
-
-  fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
+  pub fn parse(&mut self, vh: &mut VH, input_buffer: &[u8]) -> Result<usize, TarParserError> {
+    let mut bytes_read = 0;
     let mut cursor = Cursor::new(input_buffer);
+    loop {
+      let parser_state = core::mem::replace(&mut self.state, PaxParserState::NoNextStateSet);
 
-    let parser_state = core::mem::replace(&mut self.state, PaxParserState::NoNextStateSet);
+      let initial_cursor_position = cursor.position();
 
-    self.state = match parser_state {
-      PaxParserState::ParsingNewKV(state) => self.state_parsing_new_kv(&mut cursor, state)?,
-      PaxParserState::ParsingKey(state) => self.state_parsing_key(&mut cursor, state)?,
-      PaxParserState::ParsingValue(state) => self.state_parsing_value(&mut cursor, state)?,
-      PaxParserState::NoNextStateSet => {
-        unreachable!("BUG: No next state set in PaxParser");
-      },
-    };
+      let next_state = match parser_state {
+        PaxParserState::ParsingNewKV(state) => self.state_parsing_new_kv(vh, &mut cursor, state),
+        PaxParserState::ParsingKey(state) => self.state_parsing_key(vh, &mut cursor, state),
+        PaxParserState::ParsingValue(state) => self.state_parsing_value(vh, &mut cursor, state),
+        PaxParserState::NoNextStateSet => {
+          unreachable!("BUG: No next state set in PaxParser");
+        },
+      };
 
-    Ok(cursor.position())
-  }
+      let bytes_read_this_parse = cursor.position() - initial_cursor_position;
+      bytes_read += bytes_read_this_parse;
 
-  fn flush(&mut self) -> Result<(), Self::FlushError> {
-    Ok(())
+      self.state = next_state?;
+
+      if bytes_read_this_parse == 0 {
+        return Ok(bytes_read);
+      }
+    }
   }
 }
 
@@ -722,15 +764,13 @@ mod tests {
 
   use alloc::{string::ToString as _, vec};
 
-  use crate::{BytewiseWriter, WriteAll as _, WriteAllError};
-
   #[test]
   fn test_new_with_initial_global_attributes() {
     let mut globals = HashMap::new();
     globals.insert("gname".to_string(), "wheel".to_string());
     globals.insert("uid".to_string(), "0".to_string());
 
-    let parser = PaxParser::new(globals);
+    let parser = PaxParser::<IgnoreTarViolationHandler>::new(globals, usize::MAX);
 
     assert_eq!(
       parser.gname.get_with_confidence(),
@@ -743,11 +783,29 @@ mod tests {
     assert_eq!(parser.unparsed_global_attributes.len(), 0); // Parsed globals are not in the unparsed map.
   }
 
+  fn drive_parser(
+    parser: &mut PaxParser<IgnoreTarViolationHandler>,
+    input: &[u8],
+    bytewise: bool,
+  ) -> Result<(), TarParserError> {
+    let mut vh = IgnoreTarViolationHandler::default();
+    if bytewise {
+      // If bytewise parsing is requested, we will parse one byte at a time.
+      for &byte in input.iter() {
+        let byte = *&[byte];
+        parser.parse(&mut vh, byte.as_slice())?;
+      }
+      return Ok(());
+    }
+    parser.parse(&mut vh, input)?;
+    Ok(())
+  }
+
   #[test]
   fn test_simple_kv_parsing() {
     let mut parser = PaxParser::default();
     let data = b"18 path=some/file\n";
-    parser.write_all(data, false).unwrap();
+    drive_parser(&mut parser, data, false).unwrap();
 
     assert_eq!(parser.path.get(), Some(&"some/file".to_string()));
     assert_eq!(parser.state, PaxParserState::default());
@@ -757,7 +815,7 @@ mod tests {
   fn test_multiple_kv_parsing() {
     let mut parser = PaxParser::default();
     let data = b"18 path=some/file\n12 size=123\n12 uid=1000\n";
-    parser.write_all(data, false).unwrap();
+    drive_parser(&mut parser, data, false).unwrap();
 
     assert_eq!(parser.path.get(), Some(&"some/file".to_string()));
     assert_eq!(parser.state, PaxParserState::default());
@@ -768,14 +826,8 @@ mod tests {
     let mut parser = PaxParser::default();
     let data =
       b"30 mtime=1749954382.774290089\n20 atime=1749803808\n30 ctime=1749954382.774290089\n";
-    let mut bytewise_writer = BytewiseWriter::new(&mut parser);
-    let write_result = bytewise_writer.write_all(data, false);
+    drive_parser(&mut parser, data, true).unwrap();
 
-    assert!(
-      write_result.is_ok(),
-      "Failed to write data: {:?}",
-      write_result.err()
-    );
     assert_eq!(
       parser.mtime.get(),
       Some(&TimeStamp {
@@ -804,7 +856,7 @@ mod tests {
   fn test_gnu_sparse_map_0_1() {
     let mut parser = PaxParser::default();
     let data = b"45 GNU.sparse.map=1024,512,8192,2048,16384,0\n";
-    parser.write_all(data, false).unwrap();
+    drive_parser(&mut parser, data, false).unwrap();
 
     let expected = vec![
       SparseFileInstruction {
@@ -827,7 +879,7 @@ mod tests {
   fn test_unparsed_attributes_and_drain() {
     let mut parser = PaxParser::default();
     let data = b"21 SCHILY.fflags=bar\n12 uid=1000\n";
-    parser.write_all(data, false).unwrap();
+    drive_parser(&mut parser, data, false).unwrap();
 
     assert_eq!(parser.unparsed_attributes.len(), 1);
     assert_eq!(
@@ -847,10 +899,11 @@ mod tests {
     let mut parser = PaxParser::default();
     let data = b"abc path=foo\n";
     assert!(matches!(
-      parser.write_all(data, false),
-      Err(WriteAllError::Io(TarParserError::PaxParserError(
-        PaxParserError::CorruptPaxLengthInteger(ParseIntError { .. })
-      )))
+      drive_parser(&mut parser, data, false),
+      Err(TarParserError::CorruptField {
+        field: CorruptFieldContext::PaxKvLength,
+        error: GeneralParseError::InvalidInteger(ParseIntError { .. }),
+      })
     ));
   }
 
@@ -860,10 +913,11 @@ mod tests {
     // The length 11 covers " path=foo ". It must end with '\n'.
     let data = b"11 path=foo ";
     assert_eq!(
-      parser.write_all(data, false),
-      Err(WriteAllError::Io(TarParserError::PaxParserError(
-        PaxParserError::CorruptPaxValue
-      )))
+      drive_parser(&mut parser, data, false),
+      Err(TarParserError::CorruptField {
+        field: CorruptFieldContext::PaxKvMissingNewline,
+        error: GeneralParseError::ProtocolViolation("Pax record must end with a newline"),
+      })
     );
   }
 }

@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 
 use hashbrown::HashMap;
 
-use crate::extended_streams::tar::CommonParseError;
+use crate::extended_streams::tar::GeneralParseError;
 
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct TimeStamp {
@@ -72,7 +72,7 @@ impl Default for FilePermissions {
 impl FilePermissions {
   /// Parses an octal ASCII string representing Unix file permissions as found in the `mode` field of a tar header.
   /// The input is expected to be &[u8; 12].
-  pub fn parse_octal_ascii_unix_mode(octal_bytes: &[u8]) -> Result<Self, CommonParseError> {
+  pub fn parse_octal_ascii_unix_mode(octal_bytes: &[u8]) -> Result<Self, GeneralParseError> {
     let mode_str = str::from_utf8(&octal_bytes)?;
     let mode = u32::from_str_radix(mode_str, 8)?;
 

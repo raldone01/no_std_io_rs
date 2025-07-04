@@ -144,7 +144,7 @@ impl<T> BackingBuffer for Box<[T]> {
 #[derive(Clone, Debug)]
 pub struct LimitedBackingBuffer<B: BackingBuffer> {
   backing_buffer: B,
-  max_size: usize,
+  max_len: usize,
 }
 
 impl<B: BackingBuffer> LimitedBackingBuffer<B> {
@@ -152,16 +152,23 @@ impl<B: BackingBuffer> LimitedBackingBuffer<B> {
   pub fn new(backing_buffer: B, max_size: usize) -> Self {
     Self {
       backing_buffer,
-      max_size,
+      max_len: max_size,
     }
   }
 
+  #[must_use]
   pub fn backing_buffer(&self) -> &B {
     &self.backing_buffer
   }
 
+  #[must_use]
   pub fn backing_buffer_mut(&mut self) -> &mut B {
     &mut self.backing_buffer
+  }
+
+  #[must_use]
+  pub fn max_len(&self) -> usize {
+    self.max_len
   }
 }
 
@@ -177,12 +184,12 @@ impl<B: BackingBuffer> BackingBuffer for LimitedBackingBuffer<B> {
   type ResizeError = LimitedBackingBufferError<B::ResizeError>;
 
   fn try_resize(&mut self, requested_size: usize) -> Result<usize, ResizeError<Self::ResizeError>> {
-    let resize_size = requested_size.min(self.max_size);
+    let resize_size = requested_size.min(self.max_len);
     let new_elements = resize_size.saturating_sub(self.backing_buffer.len());
     if new_elements == 0 {
       return Err(ResizeError {
         size_after_resize: self.backing_buffer.len(),
-        resize_error: Self::ResizeError::MemoryLimitExceeded(self.max_size),
+        resize_error: Self::ResizeError::MemoryLimitExceeded(self.max_len),
       });
     }
     let requested_size = self

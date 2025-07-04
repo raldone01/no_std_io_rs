@@ -5,7 +5,7 @@ use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::extended_streams::tar::{
-  CommonParseError, FilePermissions, SparseFileInstruction, TimeStamp,
+  FilePermissions, GeneralParseError, SparseFileInstruction, TimeStamp,
 };
 
 // --- Constants for the TAR Header Format ---
@@ -218,7 +218,7 @@ impl V7Header {
   }
 
   #[must_use]
-  pub fn parse_mode(&self) -> Result<FilePermissions, CommonParseError> {
+  pub fn parse_mode(&self) -> Result<FilePermissions, GeneralParseError> {
     FilePermissions::parse_octal_ascii_unix_mode(&self.mode)
   }
 

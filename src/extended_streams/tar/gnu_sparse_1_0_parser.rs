@@ -2,14 +2,14 @@ use core::marker::PhantomData;
 
 use crate::{
   extended_streams::tar::{
-    CommonParseError, CorruptFieldContext, IgnoreTarViolationHandler, LimitExceededContext,
-    SparseFileInstruction, TarParserError, TarViolationHandler,
+    CorruptFieldContext, IgnoreTarViolationHandler, LimitExceededContext, SparseFileInstruction,
+    TarParserError, TarViolationHandler,
   },
-  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, LimitedVec, UnwrapInfallible,
-  WriteAllError,
+  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
+  UnwrapInfallible, WriteAllError,
 };
 
-const fn max_string_length_from_limit(limit: usize, radix: usize) -> usize {
+pub(crate) const fn max_string_length_from_limit(limit: usize, radix: usize) -> usize {
   if limit == 0 {
     return 1; // "0" is the only representation
   }
@@ -54,6 +54,7 @@ pub struct GnuSparse1_0Parser<VH: TarViolationHandler = IgnoreTarViolationHandle
   pub(crate) bytes_read: usize,
   /// This is used by ParsingNumberOfMaps and ParsingMapEntry to buffer the decimal string representation of the number.
   value_string_cursor: Cursor<[u8; MAX_VALUE_STRING_LENGTH]>,
+
   _violation_handler: PhantomData<VH>,
 }
 
@@ -80,22 +81,6 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
     self.bytes_read = 0;
   }
 
-  #[must_use]
-  fn map_corrupt_field<'a, T: Into<CommonParseError>>(
-    vh: &'a mut VH,
-    field: CorruptFieldContext,
-  ) -> impl FnOnce(T) -> TarParserError + 'a {
-    move |error| {
-      let err = TarParserError::CorruptField {
-        field,
-        error: error.into(),
-      }
-      .into();
-      let _fatal_error = vh.handle(&err);
-      err
-    }
-  }
-
   fn state_parsing_number_of_maps(
     &mut self,
     vh: &mut VH,
@@ -117,7 +102,7 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
       Err(CopyUntilError::IoRead(..)) => unreachable!("BUG: Infallible error in read operation"),
       Err(
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
-        | CopyUntilError::IoWrite(WriteAllError::Io(..)),
+        | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
       ) => {
         let err = TarParserError::LimitExceeded {
           limit: MAX_VALUE_STRING_LENGTH,
@@ -130,14 +115,15 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
 
     // Convert the number of maps bytes to a usize
     let number_of_maps_str = core::str::from_utf8(self.value_string_cursor.before()).map_err(
-      Self::map_corrupt_field(vh, CorruptFieldContext::GnuSparse1_0NumberOfMaps),
+      TarParserError::map_corrupt_field(vh, CorruptFieldContext::GnuSparse1_0NumberOfMaps),
     )?;
-    let number_of_maps = number_of_maps_str
-      .parse::<usize>()
-      .map_err(Self::map_corrupt_field(
-        vh,
-        CorruptFieldContext::GnuSparse1_0NumberOfMaps,
-      ))?;
+    let number_of_maps =
+      number_of_maps_str
+        .parse::<usize>()
+        .map_err(TarParserError::map_corrupt_field(
+          vh,
+          CorruptFieldContext::GnuSparse1_0NumberOfMaps,
+        ))?;
     if number_of_maps == 0 {
       return Ok(ParserState::Finished);
     }
@@ -188,12 +174,14 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
 
     // Convert the offset or size bytes to a u64
     let value_str = core::str::from_utf8(self.value_string_cursor.before()).map_err(
-      Self::map_corrupt_field(vh, CorruptFieldContext::GnuSparse1_0MapEntryValue),
+      TarParserError::map_corrupt_field(vh, CorruptFieldContext::GnuSparse1_0MapEntryValue),
     )?;
-    let value = value_str.parse::<u64>().map_err(Self::map_corrupt_field(
-      vh,
-      CorruptFieldContext::GnuSparse1_0MapEntryValue,
-    ))?;
+    let value = value_str
+      .parse::<u64>()
+      .map_err(TarParserError::map_corrupt_field(
+        vh,
+        CorruptFieldContext::GnuSparse1_0MapEntryValue,
+      ))?;
 
     if let Some(offset_before) = state.parsed_offset_before.take() {
       // This is the size
@@ -303,6 +291,7 @@ mod tests {
   fn drive_parser(
     parser: &mut GnuSparse1_0Parser<IgnoreTarViolationHandler>,
     input: &[u8],
+    bytewise: bool,
   ) -> Result<LimitedVec<SparseFileInstruction>, TarParserError> {
     // Pad the input to a multiple of 512 bytes
     let padding_length = (input.len() + 511) & !511;
@@ -311,6 +300,15 @@ mod tests {
     let mut cursor = Cursor::new(input_padded.as_slice());
     let mut sparse_file_instructions = LimitedVec::new(usize::MAX);
     let mut vh = IgnoreTarViolationHandler::default();
+    if bytewise {
+      // If bytewise parsing is requested, we will parse one byte at a time.
+      for &byte in input_padded.iter() {
+        let byte = *&[byte];
+        let mut parsing_cursor = Cursor::new(byte.as_slice());
+        parser.parse(&mut vh, &mut parsing_cursor, &mut sparse_file_instructions)?;
+      }
+      return Ok(sparse_file_instructions);
+    }
     parser.parse(&mut vh, &mut cursor, &mut sparse_file_instructions)?;
     Ok(sparse_file_instructions)
   }
@@ -319,7 +317,7 @@ mod tests {
   fn test_gnu_sparse_1_0_parser() {
     let mut parser = GnuSparse1_0Parser::default();
     let input = b"2\n0\n100\n200\n300\n".as_slice();
-    let result = drive_parser(&mut parser, input).expect("Failed to parse input");
+    let result = drive_parser(&mut parser, input, false).expect("Failed to parse input");
     assert_eq!(
       result.as_slice(),
       [

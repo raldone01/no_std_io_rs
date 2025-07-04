@@ -28,6 +28,12 @@ impl<R: Read> LimitedReader<R> {
   pub fn bytes_read(&self) -> usize {
     self.bytes_read
   }
+
+  /// Returns the read limit in bytes.
+  #[must_use]
+  pub fn read_limit_bytes(&self) -> usize {
+    self.read_limit_bytes
+  }
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]

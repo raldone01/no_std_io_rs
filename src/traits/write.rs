@@ -4,7 +4,7 @@ use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
 
 use thiserror::Error;
 
-use crate::LimitedWriter;
+use crate::{LimitedBackingBufferError, LimitedVec, LimitedWriter};
 
 /// Trait for writing bytes.
 pub trait Write {
@@ -124,6 +124,26 @@ impl Write for &mut [u8] {
 
 impl Write for Vec<u8> {
   type WriteError = TryReserveError;
+  type FlushError = core::convert::Infallible;
+
+  fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {
+    if input_buffer.is_empty() {
+      return Ok(0);
+    }
+    let bytes_to_write = input_buffer.len();
+    self.try_reserve(bytes_to_write)?;
+    let len = self.len();
+    self.extend_from_slice(input_buffer);
+    Ok(self.len() - len)
+  }
+
+  fn flush(&mut self) -> Result<(), Self::FlushError> {
+    Ok(())
+  }
+}
+
+impl Write for LimitedVec<u8> {
+  type WriteError = LimitedBackingBufferError<TryReserveError>;
   type FlushError = core::convert::Infallible;
 
   fn write(&mut self, input_buffer: &[u8], _sync_hint: bool) -> Result<usize, Self::WriteError> {

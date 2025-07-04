@@ -15,7 +15,7 @@ use crate::{
   extended_streams::tar::{
     confident_value::ConfidentValue,
     gnu_sparse_1_0_parser::GnuSparse1_0Parser,
-    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser, PaxParserError},
+    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
       GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
@@ -28,18 +28,22 @@ use crate::{
   BufferedRead as _, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
 };
 
-// TODO: use enums instead of context strings??? but they would need display!
-
 pub struct TarParserLimits {
-  max_sparse_instructions: usize,
+  /// The maximum number of sparse file instructions allowed in a single file.
+  max_sparse_file_instructions: usize,
+  /// The maximum length of a PAX key or value in bytes.
+  /// This also limits the maximum file path length!
+  max_pax_key_value_length: usize,
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum CommonParseError {
+pub enum GeneralParseError {
+  #[error("Protocol violation: {0}")]
+  ProtocolViolation(&'static str),
   #[error("Invalid octal number: {0}")]
   InvalidOctalNumber(#[from] ParseOctalError),
   #[error("Invalid UTF-8 string: {0}")]
-  InvalidUtf8String(#[from] Utf8Error),
+  InvalidUtf8(#[from] Utf8Error),
   #[error("Invalid integer: {0}")]
   InvalidInteger(#[from] ParseIntError),
 }
@@ -71,6 +75,10 @@ pub enum CorruptFieldContext {
   HeaderPrefix,
   GnuSparse1_0NumberOfMaps,
   GnuSparse1_0MapEntryValue,
+  PaxKvLength,
+  PaxKvValue,
+  PaxKvKey,
+  PaxKvMissingNewline,
 }
 
 impl Display for CorruptFieldContext {
@@ -97,6 +105,12 @@ impl Display for CorruptFieldContext {
       CorruptFieldContext::GnuSparse1_0MapEntryValue => {
         write!(f, "gnu_sparse_1_0.map_entry.value")
       },
+      CorruptFieldContext::PaxKvLength => write!(f, "pax.length_field"),
+      CorruptFieldContext::PaxKvValue => write!(f, "pax.value_field"),
+      CorruptFieldContext::PaxKvKey => write!(f, "pax.key_field"),
+      CorruptFieldContext::PaxKvMissingNewline => {
+        write!(f, "pax.key_value_pair.missing_newline")
+      },
     }
   }
 }
@@ -106,23 +120,32 @@ pub enum LimitExceededContext {
   GnuSparse1_0MapDecimalStringTooLong,
   GnuSparse1_0MapEntryDecimalStringTooLong,
   TooManySparseFileInstructions,
+  PaxLengthFieldDecimalStringTooLong,
+  PaxKvKeyTooLong,
+  PaxKvValueTooLong,
 }
 
 impl LimitExceededContext {
   pub(crate) fn context_unit(&self) -> (&'static str, &'static str) {
     match self {
       Self::GnuSparse1_0MapDecimalStringTooLong => (
-        "gnu 1.0 sparse maps",
-        "Number of sparse map decimal string too long",
+        "bytes",
+        "The decimal string for the number of sparse maps is too long",
       ),
       Self::GnuSparse1_0MapEntryDecimalStringTooLong => (
-        "gnu 1.0 sparse map entry",
-        "Sparse map entry decimal string too long",
+        "bytes",
+        "The decimal string for a sparse map entry is too long",
       ),
       Self::TooManySparseFileInstructions => (
         "sparse file instructions",
         "Too many sparse file instructions",
       ),
+      Self::PaxLengthFieldDecimalStringTooLong => (
+        "bytes",
+        "The decimal string for the PAX length field is too long",
+      ),
+      Self::PaxKvKeyTooLong => ("bytes", "The PAX key string is too long"),
+      Self::PaxKvValueTooLong => ("bytes", "The PAX value string is too long"),
     }
   }
 }
@@ -131,8 +154,6 @@ impl LimitExceededContext {
 pub enum TarParserError {
   #[error("Tar header parser error: {0}")]
   HeaderParserError(#[from] TarHeaderParserError),
-  #[error("Pax parser error: {0}")]
-  PaxParserError(#[from] PaxParserError),
   #[error("Limit of {limit} {unit} exceeded while parsing: {context}", unit = context.context_unit().1, context = context.context_unit().0)]
   LimitExceeded {
     limit: usize,
@@ -141,8 +162,26 @@ pub enum TarParserError {
   #[error("Parsing field {field} failed: {error}")]
   CorruptField {
     field: CorruptFieldContext,
-    error: CommonParseError,
+    error: GeneralParseError,
   },
+}
+
+impl TarParserError {
+  #[must_use]
+  pub(crate) fn map_corrupt_field<'a, VH: TarViolationHandler, T: Into<GeneralParseError>>(
+    vh: &'a mut VH,
+    field: CorruptFieldContext,
+  ) -> impl FnOnce(T) -> TarParserError + 'a {
+    move |error| {
+      let err = TarParserError::CorruptField {
+        field,
+        error: error.into(),
+      }
+      .into();
+      let _fatal_error = vh.handle(&err);
+      err
+    }
+  }
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -179,7 +218,8 @@ impl Default for TarParserOptions {
       keep_only_last: true,
       initial_global_extended_attributes: HashMap::new(),
       tar_parser_limits: TarParserLimits {
-        max_sparse_instructions: 2048,
+        max_sparse_file_instructions: 2048,
+        max_pax_key_value_length: 1024 * 8,
       },
     }
   }
@@ -330,7 +370,7 @@ pub struct TarParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
 
   parser_state: TarParserState,
   /// Contains both the global and local extended attributes.
-  pax_parser: PaxParser,
+  pax_parser: PaxParser<VH>,
 
   /// The temporary buffer used for reading the tar header.
   /// Used by the `ReadingTarHeader` and `ReadingOldGnuSparseExtendedHeader` states.
@@ -462,8 +502,11 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       keep_only_last: options.keep_only_last,
 
       parser_state: Default::default(),
-      pax_parser: PaxParser::new(options.initial_global_extended_attributes),
-      inode_state: InodeBuilder::new(options.tar_parser_limits.max_sparse_instructions),
+      pax_parser: PaxParser::new(
+        options.initial_global_extended_attributes,
+        options.tar_parser_limits.max_pax_key_value_length,
+      ),
+      inode_state: InodeBuilder::new(options.tar_parser_limits.max_sparse_file_instructions),
       header_buffer: Cursor::new([0; BLOCK_SIZE]),
       sparse_parser: GnuSparse1_0Parser::new(),
 
@@ -480,7 +523,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     self.parser_state = Default::default();
     core::mem::replace(
       &mut self.inode_state,
-      InodeBuilder::new(self.limits.max_sparse_instructions),
+      InodeBuilder::new(self.limits.max_sparse_file_instructions),
     )
   }
 
@@ -633,7 +676,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
   }
 
   #[must_use]
-  fn map_corrupt_header_field<T: Into<CommonParseError>>(
+  fn map_corrupt_header_field<T: Into<GeneralParseError>>(
     field: CorruptFieldContext,
   ) -> impl FnOnce(T) -> TarParserError {
     move |error| TarParserError::CorruptField {
@@ -1211,7 +1254,9 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       .peek_buffered(state.remaining_data)
       .unwrap_infallible();
 
-    let bytes_read = self.pax_parser.write(pax_bytes, false)?;
+    let bytes_read = self
+      .pax_parser
+      .parse(&mut self.violation_handler, pax_bytes)?;
     reader.skip_buffered(bytes_read).unwrap_infallible();
 
     state.remaining_data -= bytes_read;
@@ -1235,7 +1280,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
   fn state_parsing_gnu_sparse_1_0(
     &mut self,
     reader: &mut Cursor<&[u8]>,
-    mut state: StateParsingGnuSparse1_0,
+    state: StateParsingGnuSparse1_0,
   ) -> Result<TarParserState, TarParserError> {
     let done = self.sparse_parser.parse(
       &mut self.violation_handler,

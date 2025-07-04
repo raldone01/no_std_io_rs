@@ -26,6 +26,12 @@ impl<W: Write> LimitedWriter<W> {
   pub fn bytes_written(&self) -> usize {
     self.bytes_written
   }
+
+  /// Returns the write limit in bytes.
+  #[must_use]
+  pub fn write_limit_bytes(&self) -> usize {
+    self.write_limit_bytes
+  }
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
