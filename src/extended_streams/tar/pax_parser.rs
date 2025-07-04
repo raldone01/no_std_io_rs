@@ -152,7 +152,7 @@ pub struct PaxParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
   // parsed attributes
   gnu_sparse_name_01_01: PaxConfidentValue<String>,
   gnu_sparse_realsize_1_0: PaxConfidentValue<usize>,
-  gnu_sprase_major: PaxConfidentValue<u32>,
+  gnu_sparse_major: PaxConfidentValue<u32>,
   gnu_sparse_minor: PaxConfidentValue<u32>,
   gnu_sparse_realsize_0_01: PaxConfidentValue<usize>,
   gnu_sparse_map_local: LimitedVec<SparseFileInstruction>,
@@ -202,7 +202,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       unparsed_attributes: HashMap::new(),
       gnu_sparse_name_01_01: PaxConfidentValue::default(),
       gnu_sparse_realsize_1_0: PaxConfidentValue::default(),
-      gnu_sprase_major: PaxConfidentValue::default(),
+      gnu_sparse_major: PaxConfidentValue::default(),
       gnu_sparse_minor: PaxConfidentValue::default(),
       gnu_sparse_realsize_0_01: PaxConfidentValue::default(),
       gnu_sparse_map_local: LimitedVec::new(max_sparse_file_instructions),
@@ -236,7 +236,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   #[must_use]
   pub fn get_sparse_format(&self) -> Option<SparseFormat> {
     SparseFormat::try_from_gnu_version(
-      self.gnu_sprase_major.get().map(|v| *v),
+      self.gnu_sparse_major.get().map(|v| *v),
       self.gnu_sparse_minor.get().map(|v| *v),
     )
   }
@@ -292,24 +292,15 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     inode_builder
       .file_path
       .update_with(Self::to_confident_value(self.path.get_with_confidence()));
-    inode_builder.mtime.update_with(Self::to_confident_value(
-      self
-        .mtime
-        .get_with_confidence()
-        .or(self.mtime.get_with_confidence()),
-    ));
-    inode_builder.atime.update_with(Self::to_confident_value(
-      self
-        .mtime
-        .get_with_confidence()
-        .or(self.atime.get_with_confidence()),
-    ));
-    inode_builder.ctime.update_with(Self::to_confident_value(
-      self
-        .mtime
-        .get_with_confidence()
-        .or(self.ctime.get_with_confidence()),
-    ));
+    inode_builder
+      .mtime
+      .update_with(Self::to_confident_value(self.mtime.get_with_confidence()));
+    inode_builder
+      .atime
+      .update_with(Self::to_confident_value(self.atime.get_with_confidence()));
+    inode_builder
+      .ctime
+      .update_with(Self::to_confident_value(self.ctime.get_with_confidence()));
     inode_builder
       .gid
       .update_with(Self::to_confident_value(self.gid.get_with_confidence()));
@@ -344,7 +335,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     // Reset all parsed local attributes
     self.gnu_sparse_name_01_01.reset_local();
     self.gnu_sparse_realsize_1_0.reset_local();
-    self.gnu_sprase_major.reset_local();
+    self.gnu_sparse_major.reset_local();
     self.gnu_sparse_minor.reset_local();
     self.gnu_sparse_realsize_0_01.reset_local();
     self.gnu_sparse_map_local.clear();
@@ -417,9 +408,8 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   }
 
   pub fn drain_local_unparsed_attributes(&mut self) -> HashMap<String, String> {
-    let mut local_unparsed_attributes =
-      core::mem::replace(&mut self.unparsed_attributes, HashMap::new());
-    // add the global unparsed attributes to the local ones
+    let mut local_unparsed_attributes = self.unparsed_attributes.drain().collect::<HashMap<_, _>>();
+    // Add global attributes where the key does not already exist in local attributes.
     for (key, value) in self.global_attributes.iter() {
       if !local_unparsed_attributes.contains_key(key) {
         local_unparsed_attributes.insert(key.clone(), value.clone());
@@ -473,7 +463,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       GNU_SPARSE_MAJOR => {
         if let Ok(parsed_value) = value.parse::<u32>() {
           self
-            .gnu_sprase_major
+            .gnu_sparse_major
             .insert_with_confidence(confidence, parsed_value);
         }
       },
@@ -517,7 +507,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       GNU_SPARSE_DATA_BLOCK_OFFSET_0_0 => {
         if confidence == PaxConfidence::LOCAL {
           self
-            .gnu_sprase_major
+            .gnu_sparse_major
             .insert_with_confidence(PaxConfidence::LOCAL, 0);
           self
             .gnu_sparse_minor
@@ -540,7 +530,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       GNU_SPARSE_DATA_BLOCK_SIZE_0_0 => {
         if confidence == PaxConfidence::LOCAL {
           self
-            .gnu_sprase_major
+            .gnu_sparse_major
             .insert_with_confidence(PaxConfidence::LOCAL, 0);
           self
             .gnu_sparse_minor
@@ -563,7 +553,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       GNU_SPARSE_MAP_0_1 => {
         if confidence == PaxConfidence::LOCAL {
           self
-            .gnu_sprase_major
+            .gnu_sparse_major
             .insert_with_confidence(PaxConfidence::LOCAL, 0);
           self
             .gnu_sparse_minor
