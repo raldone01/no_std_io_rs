@@ -26,7 +26,6 @@ use crate::{
 };
 
 // TODO: Limit the hash maps/pax_key_value pair count to a reasonable number
-// TODO: properly handle ingest_attribute errors and invoke the violation handler
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum PaxParserError {
@@ -343,23 +342,28 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     self.sparse_instruction_builder = Default::default();
   }
 
-  fn try_finish_sparse_instruction(&mut self) {
-    match (
+  fn try_finish_sparse_instruction(&mut self) -> Result<(), TarParserError> {
+    if let (Some(offset_before), Some(data_size)) = (
       self.sparse_instruction_builder.offset_before,
       self.sparse_instruction_builder.data_size,
     ) {
-      (Some(offset_before), Some(data_size)) => {
-        let sparse_instruction = SparseFileInstruction {
-          offset_before,
-          data_size,
-        };
+      let sparse_instruction = SparseFileInstruction {
+        offset_before,
+        data_size,
+      };
 
-        self.gnu_sparse_map_local.push(sparse_instruction);
+      // TODO: add allocation failure reporting here and in other places where LimitExceeded can occur
+      self
+        .gnu_sparse_map_local
+        .push(sparse_instruction)
+        .map_err(|_| TarParserError::LimitExceeded {
+          limit: self.gnu_sparse_map_local.max_len(),
+          context: LimitExceededContext::TooManySparseFileInstructions,
+        })?;
 
-        self.sparse_instruction_builder = Default::default();
-      },
-      _ => {},
+      self.sparse_instruction_builder = Default::default();
     }
+    Ok(())
   }
 
   /// The sparse map is a series of comma-separated decimal values
@@ -369,32 +373,33 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     vh: &mut VHW<'_, VH>,
     value: String,
   ) -> Result<(), TarParserError> {
-    // TODO: use VH here
     let parts = value.split(',');
     let mut offset = None;
     for (i, part) in parts.enumerate() {
       if i % 2 == 0 {
         // This is an offset
-        if let Ok(parsed_offset) = part.parse::<u64>() {
-          offset = Some(parsed_offset);
-        } else {
-          // TODO: log warning about invalid offset
-        }
+        offset = vh.hpvr(part.parse::<u64>().map_err(corrupt_field_to_tar_err(
+          CorruptFieldContext::GnuSparseMapOffsetValue(SparseFormat::Gnu0_1),
+        )))?;
       } else {
         // This is a size
-        if let (Some(offset), Ok(parsed_data_size)) = (offset, part.parse::<u64>()) {
-          self
-            .gnu_sparse_map_local
-            .push(SparseFileInstruction {
-              offset_before: offset,
-              data_size: parsed_data_size,
-            })
-            .map_err(|_| TarParserError::LimitExceeded {
-              limit: self.gnu_sparse_map_local.max_len(),
-              context: LimitExceededContext::TooManySparseFileInstructions,
-            })?;
-        } else {
-          // TODO: log warning about invalid size
+        if let Some(offset) = offset {
+          if let Some(parsed_data_size) =
+            vh.hpvr(part.parse::<u64>().map_err(corrupt_field_to_tar_err(
+              CorruptFieldContext::GnuSparseMapSizeValue(SparseFormat::Gnu0_1),
+            )))?
+          {
+            self
+              .gnu_sparse_map_local
+              .push(SparseFileInstruction {
+                offset_before: offset,
+                data_size: parsed_data_size,
+              })
+              .map_err(|_| TarParserError::LimitExceeded {
+                limit: self.gnu_sparse_map_local.max_len(),
+                context: LimitExceededContext::TooManySparseFileInstructions,
+              })?;
+          }
         }
         offset = None; // Reset offset for the next pair
       }
@@ -436,9 +441,11 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       },
       GNU_SPARSE_REALSIZE_1_0 => {
         if confidence == PaxConfidence::LOCAL {
-          if let Some(parsed_value) = vh.hpvr(value.parse::<usize>().map_err(
-            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseRealFileSize1_0),
-          ))? {
+          if let Some(parsed_value) =
+            vh.hpvr(value.parse::<usize>().map_err(corrupt_field_to_tar_err(
+              CorruptFieldContext::GnuSparseRealFileSize(SparseFormat::Gnu1_0),
+            )))?
+          {
             self
               .gnu_sparse_realsize_1_0
               .insert_with_confidence(confidence, parsed_value);
@@ -471,9 +478,11 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       },
       GNU_SPARSE_REALSIZE_0_01 => {
         if confidence == PaxConfidence::LOCAL {
-          if let Some(parsed_value) = vh.hpvr(value.parse::<usize>().map_err(
-            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseRealFileSize0_01),
-          ))? {
+          if let Some(parsed_value) =
+            vh.hpvr(value.parse::<usize>().map_err(corrupt_field_to_tar_err(
+              CorruptFieldContext::GnuSparseRealFileSize(SparseFormat::Gnu0_1),
+            )))?
+          {
             self
               .gnu_sparse_realsize_0_01
               .insert_with_confidence(confidence, parsed_value);
@@ -489,7 +498,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       GNU_SPARSE_MAP_NUM_BLOCKS_0_01 => {
         // This is a user controlled value so we only try to reserve the space
         if let Some(new_len) = vh.hpvr(value.parse::<usize>().map_err(corrupt_field_to_tar_err(
-          CorruptFieldContext::GnuSparseMapNumBlocks0_01,
+          CorruptFieldContext::GnuSparseNumberOfMaps(SparseFormat::Gnu0_1),
         )))? {
           self
             .gnu_sparse_map_local
@@ -508,12 +517,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           self
             .gnu_sparse_minor
             .insert_with_confidence(PaxConfidence::LOCAL, 0);
-          if let Some(parsed_value) = vh.hpvr(value.parse::<u64>().map_err(
-            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseDataBlockOffset0_0),
-          ))? {
+          if let Some(parsed_value) =
+            vh.hpvr(value.parse::<u64>().map_err(corrupt_field_to_tar_err(
+              CorruptFieldContext::GnuSparseMapOffsetValue(SparseFormat::Gnu0_0),
+            )))?
+          {
             self.sparse_instruction_builder.offset_before = Some(parsed_value);
           }
-          self.try_finish_sparse_instruction();
+          vh.hpvr(self.try_finish_sparse_instruction())?;
         } else {
           vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
             key: GNU_SPARSE_DATA_BLOCK_OFFSET_0_0,
@@ -530,12 +541,14 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           self
             .gnu_sparse_minor
             .insert_with_confidence(PaxConfidence::LOCAL, 0);
-          if let Some(parsed_value) = vh.hpvr(value.parse::<u64>().map_err(
-            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseDataBlockSize0_0),
-          ))? {
+          if let Some(parsed_value) =
+            vh.hpvr(value.parse::<u64>().map_err(corrupt_field_to_tar_err(
+              CorruptFieldContext::GnuSparseMapSizeValue(SparseFormat::Gnu0_0),
+            )))?
+          {
             self.sparse_instruction_builder.data_size = Some(parsed_value);
           }
-          self.try_finish_sparse_instruction();
+          vh.hpvr(self.try_finish_sparse_instruction())?;
         } else {
           vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
             key: GNU_SPARSE_DATA_BLOCK_SIZE_0_0,

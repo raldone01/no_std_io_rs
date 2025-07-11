@@ -54,7 +54,7 @@ pub enum TarHeaderParserError {
   CorruptHeaderChecksum(#[from] TarHeaderChecksumError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CorruptFieldContext {
   HeaderSize,
   HeaderName,
@@ -71,15 +71,12 @@ pub enum CorruptFieldContext {
   HeaderCtime,
   HeaderRealSize,
   HeaderPrefix,
-  GnuSparse1_0NumberOfMaps,
-  GnuSparse1_0MapEntryValue,
-  GnuSparseRealFileSize1_0,
+  GnuSparseNumberOfMaps(SparseFormat),
+  GnuSparseMapOffsetValue(SparseFormat),
+  GnuSparseMapSizeValue(SparseFormat),
+  GnuSparseRealFileSize(SparseFormat),
   GnuSparseMajorVersion,
   GnuSparseMinorVersion,
-  GnuSparseRealFileSize0_01,
-  GnuSparseMapNumBlocks0_01,
-  GnuSparseDataBlockOffset0_0,
-  GnuSparseDataBlockSize0_0,
   PaxWellKnownAtime,
   PaxWellKnownGid,
   PaxWellKnownMtime,
@@ -109,29 +106,36 @@ impl Display for CorruptFieldContext {
       CorruptFieldContext::HeaderCtime => write!(f, "header.ctime"),
       CorruptFieldContext::HeaderRealSize => write!(f, "header.real_size"),
       CorruptFieldContext::HeaderPrefix => write!(f, "header.prefix"),
-      CorruptFieldContext::GnuSparse1_0NumberOfMaps => {
-        write!(f, "gnu_sparse.1_0.number_of_maps")
+      CorruptFieldContext::GnuSparseNumberOfMaps(version) => {
+        write!(
+          f,
+          "gnu_sparse.{}.number_of_maps",
+          version.to_version_string()
+        )
       },
-      CorruptFieldContext::GnuSparse1_0MapEntryValue => {
-        write!(f, "gnu_sparse.1_0.map_entry.value")
+      CorruptFieldContext::GnuSparseMapOffsetValue(version) => {
+        write!(
+          f,
+          "gnu_sparse.{}.map_entry.offset",
+          version.to_version_string()
+        )
       },
-      CorruptFieldContext::GnuSparseRealFileSize1_0 => {
-        write!(f, "gnu_sparse.real_file_size_1_0")
+      CorruptFieldContext::GnuSparseMapSizeValue(version) => {
+        write!(
+          f,
+          "gnu_sparse.{}.map_entry.size",
+          version.to_version_string()
+        )
+      },
+      CorruptFieldContext::GnuSparseRealFileSize(version) => {
+        write!(
+          f,
+          "gnu_sparse.{}.real_file_size",
+          version.to_version_string()
+        )
       },
       CorruptFieldContext::GnuSparseMajorVersion => write!(f, "gnu_sparse.major_version"),
       CorruptFieldContext::GnuSparseMinorVersion => write!(f, "gnu_sparse.minor_version"),
-      CorruptFieldContext::GnuSparseRealFileSize0_01 => {
-        write!(f, "gnu_sparse.real_file_size_0_01")
-      },
-      CorruptFieldContext::GnuSparseMapNumBlocks0_01 => {
-        write!(f, "gnu_sparse.map_num_blocks_0_01")
-      },
-      CorruptFieldContext::GnuSparseDataBlockOffset0_0 => {
-        write!(f, "gnu_sparse.data_block_offset_0_0")
-      },
-      CorruptFieldContext::GnuSparseDataBlockSize0_0 => {
-        write!(f, "gnu_sparse.data_block_size_0_0")
-      },
       CorruptFieldContext::PaxWellKnownAtime => write!(f, "pax.well_known.atime"),
       CorruptFieldContext::PaxWellKnownGid => write!(f, "pax.well_known.gid"),
       CorruptFieldContext::PaxWellKnownMtime => write!(f, "pax.well_known.mtime"),
@@ -365,6 +369,19 @@ impl SparseFormat {
         minor: minor.unwrap_or(0),
       },
     })
+  }
+
+  #[must_use]
+  pub fn to_version_string(&self) -> String {
+    match self {
+      SparseFormat::GnuOld => "gnu_old".to_string(),
+      SparseFormat::Gnu0_0 => "gnu_0.0".to_string(),
+      SparseFormat::Gnu0_1 => "gnu_0.1".to_string(),
+      SparseFormat::Gnu1_0 => "gnu_1.0".to_string(),
+      SparseFormat::GnuUnknownSparseFormat { major, minor } => {
+        format!("gnu_{major}.{minor}")
+      },
+    }
   }
 }
 

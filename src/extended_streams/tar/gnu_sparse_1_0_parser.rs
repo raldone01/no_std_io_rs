@@ -3,7 +3,7 @@ use core::marker::PhantomData;
 use crate::{
   extended_streams::tar::{
     corrupt_field_to_tar_err, CorruptFieldContext, IgnoreTarViolationHandler, LimitExceededContext,
-    SparseFileInstruction, TarParserError, TarViolationHandler, VHW,
+    SparseFileInstruction, SparseFormat, TarParserError, TarViolationHandler, VHW,
   },
   BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
   UnwrapInfallible, WriteAllError,
@@ -115,11 +115,13 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
     // Convert the number of maps bytes to a usize
     let number_of_maps_str = vh.hfvr(
       core::str::from_utf8(self.value_string_cursor.before()).map_err(corrupt_field_to_tar_err(
-        CorruptFieldContext::GnuSparse1_0NumberOfMaps,
+        CorruptFieldContext::GnuSparseNumberOfMaps(SparseFormat::Gnu1_0),
       )),
     )?;
     let number_of_maps = vh.hfvr(number_of_maps_str.parse::<usize>().map_err(
-      corrupt_field_to_tar_err(CorruptFieldContext::GnuSparse1_0NumberOfMaps),
+      corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseNumberOfMaps(
+        SparseFormat::Gnu1_0,
+      )),
     ))?;
     if number_of_maps == 0 {
       return Ok(ParserState::Finished);
@@ -166,15 +168,22 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
       },
     }
 
+    let corrupt_field_context = if state.parsed_offset_before.is_none() {
+      CorruptFieldContext::GnuSparseMapOffsetValue(SparseFormat::Gnu1_0)
+    } else {
+      CorruptFieldContext::GnuSparseMapSizeValue(SparseFormat::Gnu1_0)
+    };
+
     // Convert the offset or size bytes to a u64
     let value_str = vh.hfvr(
-      core::str::from_utf8(self.value_string_cursor.before()).map_err(corrupt_field_to_tar_err(
-        CorruptFieldContext::GnuSparse1_0MapEntryValue,
-      )),
+      core::str::from_utf8(self.value_string_cursor.before())
+        .map_err(corrupt_field_to_tar_err(corrupt_field_context)),
     )?;
-    let value = vh.hfvr(value_str.parse::<u64>().map_err(corrupt_field_to_tar_err(
-      CorruptFieldContext::GnuSparse1_0MapEntryValue,
-    )))?;
+    let value = vh.hfvr(
+      value_str
+        .parse::<u64>()
+        .map_err(corrupt_field_to_tar_err(corrupt_field_context)),
+    )?;
 
     if let Some(offset_before) = state.parsed_offset_before.take() {
       // This is the size
