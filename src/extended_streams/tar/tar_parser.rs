@@ -1,6 +1,7 @@
 use core::{convert::Infallible, fmt::Display, num::ParseIntError, str::Utf8Error};
 
 use alloc::{
+  collections::TryReserveError,
   format,
   string::{String, ToString as _},
   vec::Vec,
@@ -25,7 +26,7 @@ use crate::{
     IgnoreTarViolationHandler, RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry,
     TarInode, TarViolationHandler, TimeStamp,
   },
-  BufferedRead as _, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
+  BufferedRead as _, LimitedBackingBufferError, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
 };
 
 pub struct TarParserLimits {
@@ -152,7 +153,8 @@ impl Display for CorruptFieldContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LimitExceededContext {
   GnuSparse1_0MapDecimalStringTooLong,
-  GnuSparse1_0MapEntryDecimalStringTooLong,
+  GnuSparse1_0MapOffsetEntryDecimalStringTooLong,
+  GnuSparse1_0MapSizeEntryDecimalStringTooLong,
   TooManySparseFileInstructions,
   PaxLengthFieldDecimalStringTooLong,
   PaxKvKeyTooLong,
@@ -166,9 +168,13 @@ impl LimitExceededContext {
         "bytes",
         "The decimal string for the number of sparse maps is too long",
       ),
-      Self::GnuSparse1_0MapEntryDecimalStringTooLong => (
+      Self::GnuSparse1_0MapOffsetEntryDecimalStringTooLong => (
         "bytes",
-        "The decimal string for a sparse map entry is too long",
+        "The decimal string for a sparse map offset entry is too long",
+      ),
+      Self::GnuSparse1_0MapSizeEntryDecimalStringTooLong => (
+        "bytes",
+        "The decimal string for a sparse map size entry is too long",
       ),
       Self::TooManySparseFileInstructions => (
         "sparse file instructions",
@@ -182,6 +188,18 @@ impl LimitExceededContext {
       Self::PaxKvValueTooLong => ("bytes", "The PAX value string is too long"),
     }
   }
+
+  pub(crate) fn context_str(&self) -> &'static str {
+    match self {
+      Self::GnuSparse1_0MapDecimalStringTooLong => "gnu_sparse.1.0.map.number_of_maps",
+      Self::GnuSparse1_0MapOffsetEntryDecimalStringTooLong => "gnu_sparse.1.0.map_entry.offset",
+      Self::GnuSparse1_0MapSizeEntryDecimalStringTooLong => "gnu_sparse.1.0.map_entry.size",
+      Self::TooManySparseFileInstructions => "sparse_file_instructions",
+      Self::PaxLengthFieldDecimalStringTooLong => "pax.length_field",
+      Self::PaxKvKeyTooLong => "pax.key_field",
+      Self::PaxKvValueTooLong => "pax.value_field",
+    }
+  }
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -190,9 +208,14 @@ pub enum TarParserError {
   HeaderParserError(#[from] TarHeaderParserError),
   #[error("PAX parser error: {0}")]
   PaxParserError(#[from] PaxParserError),
-  #[error("Limit of {limit} {unit} exceeded while parsing: {context}", unit = context.context_unit().1, context = context.context_unit().0)]
+  #[error("Limit of {limit} {unit} exceeded: {context}", unit = context.context_unit().1, context = context.context_unit().0)]
   LimitExceeded {
     limit: usize,
+    context: LimitExceededContext,
+  },
+  #[error("Allocation error: {try_reserve_error} while parsing: {context}", context = context.context_str())]
+  TryReserveError {
+    try_reserve_error: TryReserveError,
     context: LimitExceededContext,
   },
   #[error("Parsing field {field} failed: {error}")]
@@ -213,6 +236,22 @@ pub(crate) fn corrupt_field_to_tar_err<'a, T: Into<GeneralParseError>>(
     }
     .into();
     err
+  }
+}
+
+#[must_use]
+pub(crate) fn limit_exceeded_to_tar_err<'a>(
+  limit: usize,
+  context: LimitExceededContext,
+) -> impl FnOnce(LimitedBackingBufferError<TryReserveError>) -> TarParserError + 'a {
+  move |error| match error {
+    LimitedBackingBufferError::MemoryLimitExceeded(_bytes_size) => {
+      TarParserError::LimitExceeded { limit, context }
+    },
+    LimitedBackingBufferError::ResizeError(alloc_error) => TarParserError::TryReserveError {
+      try_reserve_error: alloc_error,
+      context,
+    },
   }
 }
 

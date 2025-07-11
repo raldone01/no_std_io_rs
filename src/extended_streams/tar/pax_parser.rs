@@ -9,6 +9,7 @@ use crate::{
   extended_streams::tar::{
     corrupt_field_to_tar_err,
     gnu_sparse_1_0_parser::max_string_length_from_limit,
+    limit_exceeded_to_tar_err,
     tar_constants::pax_keys_well_known::{
       gnu::{
         GNU_SPARSE_DATA_BLOCK_OFFSET_0_0, GNU_SPARSE_DATA_BLOCK_SIZE_0_0, GNU_SPARSE_MAJOR,
@@ -352,14 +353,13 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         data_size,
       };
 
-      // TODO: add allocation failure reporting here and in other places where LimitExceeded can occur
       self
         .gnu_sparse_map_local
         .push(sparse_instruction)
-        .map_err(|_| TarParserError::LimitExceeded {
-          limit: self.gnu_sparse_map_local.max_len(),
-          context: LimitExceededContext::TooManySparseFileInstructions,
-        })?;
+        .map_err(limit_exceeded_to_tar_err(
+          self.gnu_sparse_map_local.max_len(),
+          LimitExceededContext::TooManySparseFileInstructions,
+        ))?;
 
       self.sparse_instruction_builder = Default::default();
     }
@@ -389,16 +389,18 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
               CorruptFieldContext::GnuSparseMapSizeValue(SparseFormat::Gnu0_1),
             )))?
           {
-            self
-              .gnu_sparse_map_local
-              .push(SparseFileInstruction {
-                offset_before: offset,
-                data_size: parsed_data_size,
-              })
-              .map_err(|_| TarParserError::LimitExceeded {
-                limit: self.gnu_sparse_map_local.max_len(),
-                context: LimitExceededContext::TooManySparseFileInstructions,
-              })?;
+            vh.hpvr(
+              self
+                .gnu_sparse_map_local
+                .push(SparseFileInstruction {
+                  offset_before: offset,
+                  data_size: parsed_data_size,
+                })
+                .map_err(limit_exceeded_to_tar_err(
+                  self.gnu_sparse_map_local.max_len(),
+                  LimitExceededContext::TooManySparseFileInstructions,
+                )),
+            )?;
           }
         }
         offset = None; // Reset offset for the next pair
@@ -500,13 +502,15 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         if let Some(new_len) = vh.hpvr(value.parse::<usize>().map_err(corrupt_field_to_tar_err(
           CorruptFieldContext::GnuSparseNumberOfMaps(SparseFormat::Gnu0_1),
         )))? {
-          self
-            .gnu_sparse_map_local
-            .resize(new_len, SparseFileInstruction::default())
-            .map_err(|_| TarParserError::LimitExceeded {
-              limit: self.gnu_sparse_map_local.max_len(),
-              context: LimitExceededContext::TooManySparseFileInstructions,
-            })?;
+          vh.hpvr(
+            self
+              .gnu_sparse_map_local
+              .resize(new_len, SparseFileInstruction::default())
+              .map_err(limit_exceeded_to_tar_err(
+                self.gnu_sparse_map_local.max_len(),
+                LimitExceededContext::TooManySparseFileInstructions,
+              )),
+          )?;
         }
       },
       GNU_SPARSE_DATA_BLOCK_OFFSET_0_0 => {
@@ -762,13 +766,15 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
     let bytes_read = cursor.read_buffered(bytes_needed).unwrap_infallible();
 
-    self
-      .pax_key_value_buffer
-      .extend_from_slice(bytes_read)
-      .map_err(|_| TarParserError::LimitExceeded {
-        limit: self.pax_key_value_buffer.max_len(),
-        context: LimitExceededContext::PaxKvValueTooLong,
-      })?;
+    vh.hfvr(
+      self
+        .pax_key_value_buffer
+        .extend_from_slice(bytes_read)
+        .map_err(limit_exceeded_to_tar_err(
+          self.pax_key_value_buffer.max_len(),
+          LimitExceededContext::PaxKvValueTooLong,
+        )),
+    )?;
 
     // Check if we have the full value now
     if self.pax_key_value_buffer.len() < value_len {

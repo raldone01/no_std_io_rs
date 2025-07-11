@@ -2,8 +2,9 @@ use core::marker::PhantomData;
 
 use crate::{
   extended_streams::tar::{
-    corrupt_field_to_tar_err, CorruptFieldContext, IgnoreTarViolationHandler, LimitExceededContext,
-    SparseFileInstruction, SparseFormat, TarParserError, TarViolationHandler, VHW,
+    corrupt_field_to_tar_err, limit_exceeded_to_tar_err, CorruptFieldContext,
+    IgnoreTarViolationHandler, LimitExceededContext, SparseFileInstruction, SparseFormat,
+    TarParserError, TarViolationHandler, VHW,
   },
   BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
   UnwrapInfallible, WriteAllError,
@@ -161,9 +162,14 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(..)),
       ) => {
+        let limit_exceeded_context = if state.parsed_offset_before.is_none() {
+          LimitExceededContext::GnuSparse1_0MapOffsetEntryDecimalStringTooLong
+        } else {
+          LimitExceededContext::GnuSparse1_0MapSizeEntryDecimalStringTooLong
+        };
         return Err(vh.hfve(TarParserError::LimitExceeded {
           limit: self.value_string_cursor.len(),
-          context: LimitExceededContext::GnuSparse1_0MapEntryDecimalStringTooLong,
+          context: limit_exceeded_context,
         }));
       },
     }
@@ -187,17 +193,17 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
 
     if let Some(offset_before) = state.parsed_offset_before.take() {
       // This is the size
-      sparse_file_instructions
-        .push(SparseFileInstruction {
-          offset_before,
-          data_size: value,
-        })
-        .map_err(|_| {
-          vh.hfve(TarParserError::LimitExceeded {
-            limit: sparse_file_instructions.max_len(),
-            context: LimitExceededContext::TooManySparseFileInstructions,
+      vh.hfvr(
+        sparse_file_instructions
+          .push(SparseFileInstruction {
+            offset_before,
+            data_size: value,
           })
-        })?;
+          .map_err(limit_exceeded_to_tar_err(
+            sparse_file_instructions.max_len(),
+            LimitExceededContext::TooManySparseFileInstructions,
+          )),
+      )?;
       state.remaining_maps -= 1;
     } else {
       // This is the offset
