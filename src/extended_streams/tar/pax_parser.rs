@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{marker::PhantomData, num::ParseIntError};
 
 use alloc::string::{String, ToString};
 
@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::{
   extended_streams::tar::{
+    corrupt_field_to_tar_err,
     gnu_sparse_1_0_parser::max_string_length_from_limit,
     tar_constants::pax_keys_well_known::{
       gnu::{
@@ -18,7 +19,7 @@ use crate::{
     },
     CorruptFieldContext, IgnoreTarViolationHandler, InodeBuilder, InodeConfidentValue,
     LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError, TarViolationHandler,
-    TimeStamp,
+    TimeStamp, VHW,
   },
   BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
   UnwrapInfallible, WriteAllError,
@@ -176,22 +177,10 @@ pub struct PaxParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
   _violation_handler: PhantomData<VH>,
 }
 
-impl<VH: TarViolationHandler + Default> Default for PaxParser<VH> {
-  fn default() -> Self {
-    let mut tar_violation_handler = VH::default();
-    PaxParser::try_new(
-      &mut tar_violation_handler,
-      HashMap::new(),
-      usize::MAX,
-      usize::MAX,
-    ).expect("BUG: With an empty initial global attributes, the PaxParser should always be able to be created")
-  }
-}
-
 impl<VH: TarViolationHandler> PaxParser<VH> {
   #[must_use]
   pub fn try_new(
-    vh: &mut VH,
+    vh: &mut VHW<'_, VH>,
     initial_global_extended_attributes: HashMap<String, String>,
     max_pax_key_value_length: usize,
     max_sparse_file_instructions: usize,
@@ -250,17 +239,18 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   }
 
   /// Parses a time value in the format "seconds.nanoseconds" or "seconds"
-  fn parse_time(value: &str) -> Option<TimeStamp> {
+  fn parse_time(value: &str) -> Result<TimeStamp, ParseIntError> {
     let mut parts = value.split('.');
 
-    let seconds = parts.next()?.parse::<u64>().ok()?;
+    let seconds = parts.next().unwrap_or("").parse::<u64>()?;
     // Default to 0 nanoseconds if not provided
-    let nanoseconds = parts
-      .next()
-      .and_then(|s| s.parse::<u32>().ok())
-      .unwrap_or(0);
+    let nanoseconds = if let Some(nanosecond_part) = parts.next() {
+      nanosecond_part.parse::<u32>()?
+    } else {
+      0
+    };
 
-    Some(TimeStamp {
+    Ok(TimeStamp {
       seconds_since_epoch: seconds,
       nanoseconds,
     })
@@ -374,7 +364,12 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   /// The sparse map is a series of comma-separated decimal values
   /// in the format `offset,size[,offset,size,...]` (0.1)
-  fn parse_gnu_sparse_map_0_1(&mut self, value: String) -> Result<(), TarParserError> {
+  fn parse_gnu_sparse_map_0_1(
+    &mut self,
+    vh: &mut VHW<'_, VH>,
+    value: String,
+  ) -> Result<(), TarParserError> {
+    // TODO: use VH here
     let parts = value.split(',');
     let mut offset = None;
     for (i, part) in parts.enumerate() {
@@ -420,7 +415,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   fn ingest_attribute(
     &mut self,
-    vh: &mut VH,
+    vh: &mut VHW<'_, VH>,
     confidence: PaxConfidence,
     key: String,
     value: String,
@@ -432,43 +427,43 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
             .gnu_sparse_name_01_01
             .insert_with_confidence(confidence, value);
         } else {
-          TarParserError::hv(
-            vh,
-            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
-              key: GNU_SPARSE_NAME_01_01,
-              expected_context: PaxConfidence::LOCAL,
-              actual_context: confidence,
-            },
-          )?;
+          vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+            key: GNU_SPARSE_NAME_01_01,
+            expected_context: PaxConfidence::LOCAL,
+            actual_context: confidence,
+          })?;
         }
       },
       GNU_SPARSE_REALSIZE_1_0 => {
         if confidence == PaxConfidence::LOCAL {
-          if let Ok(parsed_value) = value.parse::<usize>() {
+          if let Some(parsed_value) = vh.hpvr(value.parse::<usize>().map_err(
+            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseRealFileSize1_0),
+          ))? {
             self
               .gnu_sparse_realsize_1_0
               .insert_with_confidence(confidence, parsed_value);
           }
         } else {
-          TarParserError::hv(
-            vh,
-            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
-              key: GNU_SPARSE_REALSIZE_1_0,
-              expected_context: PaxConfidence::LOCAL,
-              actual_context: confidence,
-            },
-          )?;
+          vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+            key: GNU_SPARSE_REALSIZE_1_0,
+            expected_context: PaxConfidence::LOCAL,
+            actual_context: confidence,
+          })?;
         }
       },
       GNU_SPARSE_MAJOR => {
-        if let Ok(parsed_value) = value.parse::<u32>() {
+        if let Some(parsed_value) = vh.hpvr(value.parse::<u32>().map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseMajorVersion),
+        ))? {
           self
             .gnu_sparse_major
             .insert_with_confidence(confidence, parsed_value);
         }
       },
       GNU_SPARSE_MINOR => {
-        if let Ok(parsed_value) = value.parse::<u32>() {
+        if let Some(parsed_value) = vh.hpvr(value.parse::<u32>().map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseMinorVersion),
+        ))? {
           self
             .gnu_sparse_minor
             .insert_with_confidence(confidence, parsed_value);
@@ -476,25 +471,26 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       },
       GNU_SPARSE_REALSIZE_0_01 => {
         if confidence == PaxConfidence::LOCAL {
-          if let Ok(parsed_value) = value.parse::<usize>() {
+          if let Some(parsed_value) = vh.hpvr(value.parse::<usize>().map_err(
+            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseRealFileSize0_01),
+          ))? {
             self
               .gnu_sparse_realsize_0_01
               .insert_with_confidence(confidence, parsed_value);
           }
         } else {
-          TarParserError::hv(
-            vh,
-            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
-              key: GNU_SPARSE_REALSIZE_0_01,
-              expected_context: PaxConfidence::LOCAL,
-              actual_context: confidence,
-            },
-          )?;
+          vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+            key: GNU_SPARSE_REALSIZE_0_01,
+            expected_context: PaxConfidence::LOCAL,
+            actual_context: confidence,
+          })?;
         }
       },
       GNU_SPARSE_MAP_NUM_BLOCKS_0_01 => {
         // This is a user controlled value so we only try to reserve the space
-        if let Ok(new_len) = value.parse::<usize>() {
+        if let Some(new_len) = vh.hpvr(value.parse::<usize>().map_err(corrupt_field_to_tar_err(
+          CorruptFieldContext::GnuSparseMapNumBlocks0_01,
+        )))? {
           self
             .gnu_sparse_map_local
             .resize(new_len, SparseFileInstruction::default())
@@ -512,19 +508,18 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           self
             .gnu_sparse_minor
             .insert_with_confidence(PaxConfidence::LOCAL, 0);
-          if let Ok(parsed_value) = value.parse::<u64>() {
+          if let Some(parsed_value) = vh.hpvr(value.parse::<u64>().map_err(
+            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseDataBlockOffset0_0),
+          ))? {
             self.sparse_instruction_builder.offset_before = Some(parsed_value);
           }
           self.try_finish_sparse_instruction();
         } else {
-          TarParserError::hv(
-            vh,
-            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
-              key: GNU_SPARSE_DATA_BLOCK_OFFSET_0_0,
-              expected_context: PaxConfidence::LOCAL,
-              actual_context: confidence,
-            },
-          )?;
+          vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+            key: GNU_SPARSE_DATA_BLOCK_OFFSET_0_0,
+            expected_context: PaxConfidence::LOCAL,
+            actual_context: confidence,
+          })?;
         }
       },
       GNU_SPARSE_DATA_BLOCK_SIZE_0_0 => {
@@ -535,19 +530,18 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           self
             .gnu_sparse_minor
             .insert_with_confidence(PaxConfidence::LOCAL, 0);
-          if let Ok(parsed_value) = value.parse::<u64>() {
+          if let Some(parsed_value) = vh.hpvr(value.parse::<u64>().map_err(
+            corrupt_field_to_tar_err(CorruptFieldContext::GnuSparseDataBlockSize0_0),
+          ))? {
             self.sparse_instruction_builder.data_size = Some(parsed_value);
           }
           self.try_finish_sparse_instruction();
         } else {
-          TarParserError::hv(
-            vh,
-            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
-              key: GNU_SPARSE_DATA_BLOCK_SIZE_0_0,
-              expected_context: PaxConfidence::LOCAL,
-              actual_context: confidence,
-            },
-          )?;
+          vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+            key: GNU_SPARSE_DATA_BLOCK_SIZE_0_0,
+            expected_context: PaxConfidence::LOCAL,
+            actual_context: confidence,
+          })?;
         }
       },
       GNU_SPARSE_MAP_0_1 => {
@@ -558,25 +552,26 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           self
             .gnu_sparse_minor
             .insert_with_confidence(PaxConfidence::LOCAL, 1);
-          self.parse_gnu_sparse_map_0_1(value);
+          self.parse_gnu_sparse_map_0_1(vh, value)?;
         } else {
-          TarParserError::hv(
-            vh,
-            PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
-              key: GNU_SPARSE_MAP_0_1,
-              expected_context: PaxConfidence::LOCAL,
-              actual_context: confidence,
-            },
-          )?;
+          vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
+            key: GNU_SPARSE_MAP_0_1,
+            expected_context: PaxConfidence::LOCAL,
+            actual_context: confidence,
+          })?;
         }
       },
       ATIME => {
-        if let Some(parsed_value) = Self::parse_time(value.as_str()) {
+        if let Some(parsed_value) = vh.hpvr(Self::parse_time(value.as_str()).map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::PaxWellKnownAtime),
+        ))? {
           self.atime.insert_with_confidence(confidence, parsed_value);
         }
       },
       GID => {
-        if let Ok(parsed_value) = value.parse::<u32>() {
+        if let Some(parsed_value) = vh.hpvr(value.parse::<u32>().map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::PaxWellKnownGid),
+        ))? {
           self.gid.insert_with_confidence(confidence, parsed_value);
         }
       },
@@ -587,12 +582,16 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         self.link_path.insert_with_confidence(confidence, value);
       },
       MTIME => {
-        if let Some(parsed_value) = Self::parse_time(value.as_str()) {
+        if let Some(parsed_value) = vh.hpvr(Self::parse_time(value.as_str()).map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::PaxWellKnownMtime),
+        ))? {
           self.mtime.insert_with_confidence(confidence, parsed_value);
         }
       },
       CTIME => {
-        if let Some(parsed_value) = Self::parse_time(value.as_str()) {
+        if let Some(parsed_value) = vh.hpvr(Self::parse_time(value.as_str()).map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::PaxWellKnownCtime),
+        ))? {
           self.ctime.insert_with_confidence(confidence, parsed_value);
         }
       },
@@ -600,14 +599,18 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         self.path.insert_with_confidence(confidence, value);
       },
       SIZE => {
-        if let Ok(parsed_value) = value.parse::<usize>() {
+        if let Some(parsed_value) = vh.hpvr(value.parse::<usize>().map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::PaxWellKnownSize),
+        ))? {
           self
             .data_size
             .insert_with_confidence(confidence, parsed_value);
         }
       },
       UID => {
-        if let Ok(parsed_value) = value.parse::<u32>() {
+        if let Some(parsed_value) = vh.hpvr(value.parse::<u32>().map_err(
+          corrupt_field_to_tar_err(CorruptFieldContext::PaxWellKnownUid),
+        ))? {
           self.uid.insert_with_confidence(confidence, parsed_value);
         }
       },
@@ -634,7 +637,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   /// This function parses the length decimal and computes the values for the parsing key state.
   fn state_parsing_new_kv(
     &mut self,
-    vh: &mut VH,
+    vh: &mut VHW<'_, VH>,
     cursor: &mut Cursor<&[u8]>,
     mut state: StateParsingNewKV,
   ) -> Result<PaxParserState, TarParserError> {
@@ -664,15 +667,15 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     }
 
     // Convert the length bytes to a usize
-    let length_str = core::str::from_utf8(state.kv_cursor.before()).map_err(
-      TarParserError::map_corrupt_field(vh, CorruptFieldContext::PaxKvLength),
+    let length_str = vh.hfvr(
+      core::str::from_utf8(state.kv_cursor.before())
+        .map_err(corrupt_field_to_tar_err(CorruptFieldContext::PaxKvLength)),
     )?;
-    let length = length_str
-      .parse::<usize>()
-      .map_err(TarParserError::map_corrupt_field(
-        vh,
-        CorruptFieldContext::PaxKvLength,
-      ))?;
+    let length = vh.hfvr(
+      length_str
+        .parse::<usize>()
+        .map_err(corrupt_field_to_tar_err(CorruptFieldContext::PaxKvLength)),
+    )?;
 
     let length = length.saturating_sub(state.kv_cursor.before().len() + 1);
     if length == 0 {
@@ -686,7 +689,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   /// Parses the key from the cursor and returns the next state.
   fn state_parsing_key(
     &mut self,
-    vh: &mut VH,
+    vh: &mut VHW<'_, VH>,
     cursor: &mut Cursor<&[u8]>,
     state: StateParsingKey,
   ) -> Result<PaxParserState, TarParserError> {
@@ -708,13 +711,10 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(..)),
       ) => {
-        let err = TarParserError::LimitExceeded {
+        return Err(vh.hfve(TarParserError::LimitExceeded {
           limit: self.pax_key_value_buffer.max_len(),
           context: LimitExceededContext::PaxKvKeyTooLong,
-        };
-        // Recovering from this error would require keeping a buffer of the consumed data.
-        let _fatal_error = vh.handle(&err);
-        return Err(err);
+        }));
       },
     }
 
@@ -725,11 +725,11 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       // If the length is 0, we are done with this key-value pair
       return Ok(PaxParserState::default());
     }
-    let key = core::str::from_utf8(&self.pax_key_value_buffer)
-      .map_err(TarParserError::map_corrupt_field(
-        vh,
-        CorruptFieldContext::PaxKvKey,
-      ))?
+    let key = vh
+      .hfvr(
+        core::str::from_utf8(&self.pax_key_value_buffer)
+          .map_err(corrupt_field_to_tar_err(CorruptFieldContext::PaxKvKey)),
+      )?
       .to_string();
     self.pax_key_value_buffer.clear();
     return Ok(PaxParserState::ParsingValue(StateParsingValue {
@@ -740,7 +740,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   fn state_parsing_value(
     &mut self,
-    vh: &mut VH,
+    vh: &mut VHW<'_, VH>,
     cursor: &mut Cursor<&[u8]>,
     state: StateParsingValue,
   ) -> Result<PaxParserState, TarParserError> {
@@ -772,21 +772,17 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     let newline_char = cursor.full_buffer()[cursor.position()];
     if newline_char != b'\n' {
       // Record must end in a newline, so length of value part must be at least 1.
-      let err = PaxParserError::KeyValuePairMissingNewline.into();
-      let should_handle = vh.handle(&err);
-      if should_handle {
-        return Err(err);
-      }
+      vh.hpve(PaxParserError::KeyValuePairMissingNewline)?;
     } else {
       cursor.set_position(cursor.position() + 1);
     }
 
     // We have a full key-value pair. Ingest it.
-    let value = core::str::from_utf8(&self.pax_key_value_buffer)
-      .map_err(TarParserError::map_corrupt_field(
-        vh,
-        CorruptFieldContext::PaxKvValue,
-      ))?
+    let value = vh
+      .hfvr(
+        core::str::from_utf8(&self.pax_key_value_buffer)
+          .map_err(corrupt_field_to_tar_err(CorruptFieldContext::PaxKvValue)),
+      )?
       .to_string();
 
     self.ingest_attribute(vh, self.current_pax_mode, state.key, value)?;
@@ -795,7 +791,11 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     Ok(PaxParserState::default())
   }
 
-  pub fn parse(&mut self, vh: &mut VH, input_buffer: &[u8]) -> Result<usize, TarParserError> {
+  pub fn parse(
+    &mut self,
+    vh: &mut VHW<'_, VH>,
+    input_buffer: &[u8],
+  ) -> Result<usize, TarParserError> {
     let mut bytes_read = 0;
     let mut cursor = Cursor::new(input_buffer);
     loop {
@@ -830,9 +830,19 @@ mod tests {
 
   use alloc::vec;
 
-  use crate::extended_streams::tar::GeneralParseError;
+  use crate::extended_streams::tar::{GeneralParseError, StrictTarViolationHandler};
 
   use super::*;
+
+  fn new_strict_parser() -> PaxParser<StrictTarViolationHandler> {
+    PaxParser::try_new(
+      &mut VHW(&mut StrictTarViolationHandler::default()),
+      HashMap::new(),
+      usize::MAX,
+      usize::MAX,
+    )
+    .expect("Failed to create PaxParser")
+  }
 
   #[test]
   fn test_new_with_initial_global_attributes() {
@@ -841,8 +851,9 @@ mod tests {
     globals.insert("uid".to_string(), "0".to_string());
 
     let mut vh = IgnoreTarViolationHandler::default();
+    let vh = &mut VHW(&mut vh);
     let parser =
-      PaxParser::<IgnoreTarViolationHandler>::try_new(&mut vh, globals, usize::MAX, usize::MAX)
+      PaxParser::<IgnoreTarViolationHandler>::try_new(vh, globals, usize::MAX, usize::MAX)
         .expect("Failed to create PaxParser with initial global attributes");
 
     assert_eq!(
@@ -856,27 +867,28 @@ mod tests {
     assert_eq!(parser.unparsed_global_attributes.len(), 0); // Parsed globals are not in the unparsed map.
   }
 
-  fn drive_parser(
-    parser: &mut PaxParser<IgnoreTarViolationHandler>,
+  fn drive_parser<VH: TarViolationHandler + Default>(
+    parser: &mut PaxParser<VH>,
     input: &[u8],
     bytewise: bool,
   ) -> Result<(), TarParserError> {
-    let mut vh = IgnoreTarViolationHandler::default();
+    let mut vh = VH::default();
+    let vh = &mut VHW(&mut vh);
     if bytewise {
       // If bytewise parsing is requested, we will parse one byte at a time.
       for &byte in input.iter() {
         let byte = *&[byte];
-        parser.parse(&mut vh, byte.as_slice())?;
+        parser.parse(vh, byte.as_slice())?;
       }
       return Ok(());
     }
-    parser.parse(&mut vh, input)?;
+    parser.parse(vh, input)?;
     Ok(())
   }
 
   #[test]
   fn test_simple_kv_parsing() {
-    let mut parser = PaxParser::default();
+    let mut parser = new_strict_parser();
     let data = b"18 path=some/file\n";
     drive_parser(&mut parser, data, false).unwrap();
 
@@ -886,7 +898,7 @@ mod tests {
 
   #[test]
   fn test_multiple_kv_parsing() {
-    let mut parser = PaxParser::default();
+    let mut parser = new_strict_parser();
     let data = b"18 path=some/file\n12 size=123\n12 uid=1000\n";
     drive_parser(&mut parser, data, false).unwrap();
 
@@ -896,7 +908,7 @@ mod tests {
 
   #[test]
   fn test_multiple_kv_parsing_from_archive() {
-    let mut parser = PaxParser::default();
+    let mut parser = new_strict_parser();
     let data =
       b"30 mtime=1749954382.774290089\n20 atime=1749803808\n30 ctime=1749954382.774290089\n";
     drive_parser(&mut parser, data, true).unwrap();
@@ -927,7 +939,7 @@ mod tests {
 
   #[test]
   fn test_gnu_sparse_map_0_1() {
-    let mut parser = PaxParser::default();
+    let mut parser = new_strict_parser();
     let data = b"45 GNU.sparse.map=1024,512,8192,2048,16384,0\n";
     drive_parser(&mut parser, data, false).unwrap();
 
@@ -953,7 +965,7 @@ mod tests {
 
   #[test]
   fn test_unparsed_attributes_and_drain() {
-    let mut parser = PaxParser::default();
+    let mut parser = new_strict_parser();
     let data = b"21 SCHILY.fflags=bar\n12 uid=1000\n";
     drive_parser(&mut parser, data, false).unwrap();
 
@@ -972,7 +984,7 @@ mod tests {
 
   #[test]
   fn test_parser_error_bad_length() {
-    let mut parser = PaxParser::default();
+    let mut parser = new_strict_parser();
     let data = b"abc path=foo\n";
     assert!(matches!(
       drive_parser(&mut parser, data, false),
@@ -985,9 +997,8 @@ mod tests {
 
   #[test]
   fn test_parser_error_bad_value() {
-    let mut parser = PaxParser::default();
-    // The length 11 covers " path=foo ". It must end with '\n'.
-    let data = b"11 path=foo ";
+    let mut parser = new_strict_parser();
+    let data = b"12 path=foo ";
     assert_eq!(
       drive_parser(&mut parser, data, false),
       Err(TarParserError::PaxParserError(

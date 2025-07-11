@@ -73,6 +73,19 @@ pub enum CorruptFieldContext {
   HeaderPrefix,
   GnuSparse1_0NumberOfMaps,
   GnuSparse1_0MapEntryValue,
+  GnuSparseRealFileSize1_0,
+  GnuSparseMajorVersion,
+  GnuSparseMinorVersion,
+  GnuSparseRealFileSize0_01,
+  GnuSparseMapNumBlocks0_01,
+  GnuSparseDataBlockOffset0_0,
+  GnuSparseDataBlockSize0_0,
+  PaxWellKnownAtime,
+  PaxWellKnownGid,
+  PaxWellKnownMtime,
+  PaxWellKnownCtime,
+  PaxWellKnownSize,
+  PaxWellKnownUid,
   PaxKvLength,
   PaxKvValue,
   PaxKvKey,
@@ -97,11 +110,34 @@ impl Display for CorruptFieldContext {
       CorruptFieldContext::HeaderRealSize => write!(f, "header.real_size"),
       CorruptFieldContext::HeaderPrefix => write!(f, "header.prefix"),
       CorruptFieldContext::GnuSparse1_0NumberOfMaps => {
-        write!(f, "gnu_sparse_1_0.number_of_maps")
+        write!(f, "gnu_sparse.1_0.number_of_maps")
       },
       CorruptFieldContext::GnuSparse1_0MapEntryValue => {
-        write!(f, "gnu_sparse_1_0.map_entry.value")
+        write!(f, "gnu_sparse.1_0.map_entry.value")
       },
+      CorruptFieldContext::GnuSparseRealFileSize1_0 => {
+        write!(f, "gnu_sparse.real_file_size_1_0")
+      },
+      CorruptFieldContext::GnuSparseMajorVersion => write!(f, "gnu_sparse.major_version"),
+      CorruptFieldContext::GnuSparseMinorVersion => write!(f, "gnu_sparse.minor_version"),
+      CorruptFieldContext::GnuSparseRealFileSize0_01 => {
+        write!(f, "gnu_sparse.real_file_size_0_01")
+      },
+      CorruptFieldContext::GnuSparseMapNumBlocks0_01 => {
+        write!(f, "gnu_sparse.map_num_blocks_0_01")
+      },
+      CorruptFieldContext::GnuSparseDataBlockOffset0_0 => {
+        write!(f, "gnu_sparse.data_block_offset_0_0")
+      },
+      CorruptFieldContext::GnuSparseDataBlockSize0_0 => {
+        write!(f, "gnu_sparse.data_block_size_0_0")
+      },
+      CorruptFieldContext::PaxWellKnownAtime => write!(f, "pax.well_known.atime"),
+      CorruptFieldContext::PaxWellKnownGid => write!(f, "pax.well_known.gid"),
+      CorruptFieldContext::PaxWellKnownMtime => write!(f, "pax.well_known.mtime"),
+      CorruptFieldContext::PaxWellKnownCtime => write!(f, "pax.well_known.ctime"),
+      CorruptFieldContext::PaxWellKnownSize => write!(f, "pax.well_known.size"),
+      CorruptFieldContext::PaxWellKnownUid => write!(f, "pax.well_known.uid"),
       CorruptFieldContext::PaxKvLength => write!(f, "pax.length_field"),
       CorruptFieldContext::PaxKvValue => write!(f, "pax.value_field"),
       CorruptFieldContext::PaxKvKey => write!(f, "pax.key_field"),
@@ -162,33 +198,33 @@ pub enum TarParserError {
   },
 }
 
-impl TarParserError {
-  #[must_use]
-  pub(crate) fn map_corrupt_field<'a, VH: TarViolationHandler, T: Into<GeneralParseError>>(
-    vh: &'a mut VH,
-    field: CorruptFieldContext,
-  ) -> impl FnOnce(T) -> TarParserError + 'a {
-    move |error| {
-      let err = TarParserError::CorruptField {
-        field,
-        error: error.into(),
-      }
-      .into();
-      let _fatal_error = vh.handle(&err);
-      err
+#[must_use]
+pub(crate) fn corrupt_field_to_tar_err<'a, T: Into<GeneralParseError>>(
+  field: CorruptFieldContext,
+) -> impl FnOnce(T) -> TarParserError + 'a {
+  move |error| {
+    let err = TarParserError::CorruptField {
+      field,
+      error: error.into(),
     }
+    .into();
+    err
   }
+}
 
+pub(crate) struct VHW<'a, VH: TarViolationHandler>(pub(crate) &'a mut VH);
+
+impl<VH: TarViolationHandler> VHW<'_, VH> {
   /// Handles a potential violation in result form by calling the violation handler.
-  pub(crate) fn hpv<T, VH: TarViolationHandler, E: Into<TarParserError>>(
-    violation_handler: &mut VH,
+  pub(crate) fn hpvr<T, E: Into<TarParserError>>(
+    &mut self,
     operation_result: Result<T, E>,
   ) -> Result<Option<T>, TarParserError> {
     match operation_result {
       Ok(v) => Ok(Some(v)),
       Err(e) => {
         let e = e.into();
-        if violation_handler.handle(&e) {
+        if self.0.handle(&e, false) {
           Ok(None)
         } else {
           Err(e)
@@ -197,17 +233,36 @@ impl TarParserError {
     }
   }
 
-  /// Handles a violation in error form by calling the violation handler.
-  pub(crate) fn hv<VH: TarViolationHandler, E: Into<TarParserError>>(
-    violation_handler: &mut VH,
-    error: E,
-  ) -> Result<(), TarParserError> {
+  /// Handles a potential violation in error form by calling the violation handler.
+  pub(crate) fn hpve<E: Into<TarParserError>>(&mut self, error: E) -> Result<(), TarParserError> {
     let e = error.into();
-    if violation_handler.handle(&e) {
+    if self.0.handle(&e, false) {
       Ok(())
     } else {
       Err(e)
     }
+  }
+
+  /// Handles a fatal violation in result form by calling the violation handler.
+  pub(crate) fn hfvr<T, E: Into<TarParserError>>(
+    &mut self,
+    operation_result: Result<T, E>,
+  ) -> Result<T, TarParserError> {
+    match operation_result {
+      Ok(v) => Ok(v),
+      Err(e) => {
+        let e = e.into();
+        let _fatal_error = self.0.handle(&e, true);
+        Err(e)
+      },
+    }
+  }
+
+  /// Handles a fatal violation in error form by calling the violation handler.
+  pub(crate) fn hfve<E: Into<TarParserError>>(&mut self, error: E) -> TarParserError {
+    let e = error.into();
+    let _fatal_error = self.0.handle(&e, true);
+    e
   }
 }
 
@@ -525,6 +580,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     options: TarParserOptions,
     mut violation_handler: VH,
   ) -> Result<Self, TarParserError> {
+    let mut violation_handler_wrapped = VHW(&mut violation_handler);
     Ok(Self {
       extracted_files: Default::default(),
 
@@ -534,7 +590,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
 
       parser_state: Default::default(),
       pax_parser: PaxParser::try_new(
-        &mut violation_handler,
+        &mut violation_handler_wrapped,
         options.initial_global_extended_attributes,
         options.tar_parser_limits.max_pax_key_value_length,
         options.tar_parser_limits.max_sparse_file_instructions,
@@ -701,14 +757,13 @@ impl<VH: TarViolationHandler> TarParser<VH> {
   }
 
   fn parse_v7_header(
-    vh: &mut VH,
+    vh: &mut VHW<'_, VH>,
     found_type_flags: &mut HashMap<TarTypeFlag, usize>,
     inode_state: &mut InodeBuilder,
     old_header: &V7Header,
   ) -> Result<TarTypeFlag, TarParserError> {
     // verify checksum
-    TarParserError::hpv(
-      vh,
+    vh.hpvr(
       old_header
         .verify_checksum()
         .map_err(TarHeaderParserError::CorruptHeaderChecksum),
@@ -722,8 +777,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     }
 
     // parse the information from the old header
-    TarParserError::hpv(
-      vh,
+    vh.hpvr(
       inode_state
         .data_after_header_size
         .try_get_or_set_with(TarConfidence::V7, || old_header.parse_size())
@@ -733,8 +787,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     )?;
 
     if typeflag.is_file_like() {
-      TarParserError::hpv(
-        vh,
+      vh.hpvr(
         inode_state
           .file_path
           .try_get_or_set_with(TarConfidence::V7, || old_header.parse_name())
@@ -742,8 +795,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
             CorruptFieldContext::HeaderName,
           )),
       )?;
-      TarParserError::hpv(
-        vh,
+      vh.hpvr(
         inode_state
           .mode
           .try_get_or_set_with(TarConfidence::V7, || old_header.parse_mode())
@@ -751,8 +803,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
             CorruptFieldContext::HeaderMode,
           )),
       )?;
-      TarParserError::hpv(
-        vh,
+      vh.hpvr(
         inode_state
           .uid
           .try_get_or_set_with(TarConfidence::V7, || old_header.parse_uid())
@@ -760,8 +811,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
             CorruptFieldContext::HeaderUid,
           )),
       )?;
-      TarParserError::hpv(
-        vh,
+      vh.hpvr(
         inode_state
           .gid
           .try_get_or_set_with(TarConfidence::V7, || old_header.parse_gid())
@@ -770,8 +820,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           )),
       )?;
 
-      TarParserError::hpv(
-        vh,
+      vh.hpvr(
         inode_state
           .mtime
           .try_get_or_set_with(TarConfidence::V7, || old_header.parse_mtime())
@@ -782,8 +831,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     }
 
     if typeflag.is_link_like() {
-      TarParserError::hpv(
-        vh,
+      vh.hpvr(
         inode_state
           .link_target
           .try_get_or_set_with(TarConfidence::V7, || {
@@ -799,12 +847,11 @@ impl<VH: TarViolationHandler> TarParser<VH> {
   }
 
   fn parse_common_header_additions(
-    vh: &mut VH,
+    vh: &mut VHW<'_, VH>,
     inode_state: &mut InodeBuilder,
     common_header_additions: &CommonHeaderAdditions,
   ) -> Result<(), TarParserError> {
-    TarParserError::hpv(
-      vh,
+    vh.hpvr(
       inode_state
         .uname
         .try_get_or_set_with(TarConfidence::Ustar, || {
@@ -814,8 +861,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           CorruptFieldContext::HeaderUname,
         )),
     )?;
-    TarParserError::hpv(
-      vh,
+    vh.hpvr(
       inode_state
         .gname
         .try_get_or_set_with(TarConfidence::Ustar, || {
@@ -825,24 +871,14 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           CorruptFieldContext::HeaderGname,
         )),
     )?;
-    if let Some(dev_major) = TarParserError::hpv(
-      vh,
-      common_header_additions
-        .parse_dev_major()
-        .map_err(Self::map_corrupt_header_field(
-          CorruptFieldContext::HeaderDevMajor,
-        )),
-    )? {
+    if let Some(dev_major) = vh.hpvr(common_header_additions.parse_dev_major().map_err(
+      Self::map_corrupt_header_field(CorruptFieldContext::HeaderDevMajor),
+    ))? {
       inode_state.dev_major = dev_major;
     }
-    if let Some(dev_minor) = TarParserError::hpv(
-      vh,
-      common_header_additions
-        .parse_dev_minor()
-        .map_err(Self::map_corrupt_header_field(
-          CorruptFieldContext::HeaderDevMinor,
-        )),
-    )? {
+    if let Some(dev_minor) = vh.hpvr(common_header_additions.parse_dev_minor().map_err(
+      Self::map_corrupt_header_field(CorruptFieldContext::HeaderDevMinor),
+    ))? {
       inode_state.dev_minor = dev_minor;
     }
     Ok(())
@@ -875,12 +911,14 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     let old_header =
       V7Header::ref_from_bytes(&header_buffer).expect("BUG: Not enough bytes for OldHeader");
 
+    let vh = &mut VHW(&mut self.violation_handler);
+
     // This parses all fields in a header block regardless of the typeflag.
     // There is some room for improving allocations/parsing based on the typeflag.
     match &old_header.magic_version {
       V7Header::MAGIC_VERSION_V7 => {
         typeflag = Self::parse_v7_header(
-          &mut self.violation_handler,
+          vh,
           &mut self.found_type_flags,
           &mut self.inode_state,
           old_header,
@@ -889,7 +927,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       },
       V7Header::MAGIC_VERSION_USTAR => {
         typeflag = Self::parse_v7_header(
-          &mut self.violation_handler,
+          vh,
           &mut self.found_type_flags,
           &mut self.inode_state,
           old_header,
@@ -898,16 +936,10 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         if typeflag.is_file_like() {
           let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
             .expect("BUG: Not enough bytes for CommonHeaderAdditions in USTAR");
-          Self::parse_common_header_additions(
-            &mut self.violation_handler,
-            &mut self.inode_state,
-            common_header_additions,
-          )?;
+          Self::parse_common_header_additions(vh, &mut self.inode_state, common_header_additions)?;
           let ustar_additions =
             UstarHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
               .expect("BUG: Not enough bytes for UstarHeaderAdditions");
-
-          let vh = &mut self.violation_handler;
 
           // If there is already a path with a confidence of USTAR or less, we want to prefix the path with the ustar prefix.
           // If there is no path, we want to use the ustar prefix as the path.
@@ -927,17 +959,15 @@ impl<VH: TarViolationHandler> TarParser<VH> {
                 }
               },
               Err(parse_error) => {
-                TarParserError::hv(
-                  vh,
-                  Self::map_corrupt_header_field(CorruptFieldContext::HeaderPrefix)(parse_error),
-                )?;
+                vh.hpve(Self::map_corrupt_header_field(
+                  CorruptFieldContext::HeaderPrefix,
+                )(parse_error))?;
                 potential_path
               },
             };
             self.inode_state.file_path.set(TarConfidence::Ustar, joined);
           } else {
-            TarParserError::hpv(
-              vh,
+            vh.hpvr(
               self
                 .inode_state
                 .file_path
@@ -955,7 +985,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       },
       V7Header::MAGIC_VERSION_GNU => {
         typeflag = Self::parse_v7_header(
-          &mut self.violation_handler,
+          vh,
           &mut self.found_type_flags,
           &mut self.inode_state,
           old_header,
@@ -963,19 +993,12 @@ impl<VH: TarViolationHandler> TarParser<VH> {
 
         let common_header_additions = CommonHeaderAdditions::ref_from_bytes(&old_header.padding)
           .expect("BUG: Not enough bytes for CommonHeaderAdditions in GNU");
-        Self::parse_common_header_additions(
-          &mut self.violation_handler,
-          &mut self.inode_state,
-          common_header_additions,
-        )?;
+        Self::parse_common_header_additions(vh, &mut self.inode_state, common_header_additions)?;
         let gnu_additions = GnuHeaderAdditions::ref_from_bytes(&common_header_additions.padding)
           .expect("BUG: Not enough bytes for GnuHeaderAdditions");
 
-        let vh = &mut self.violation_handler;
-
         if typeflag.is_file_like() {
-          TarParserError::hpv(
-            vh,
+          vh.hpvr(
             self
               .inode_state
               .atime
@@ -984,8 +1007,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
                 CorruptFieldContext::HeaderAtime,
               )),
           )?;
-          TarParserError::hpv(
-            vh,
+          vh.hpvr(
             self
               .inode_state
               .ctime
@@ -1003,8 +1025,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
           old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
         }
 
-        TarParserError::hpv(
-          vh,
+        vh.hpvr(
           self
             .inode_state
             .sparse_real_size
@@ -1267,9 +1288,9 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       .peek_buffered(state.remaining_data)
       .unwrap_infallible();
 
-    let bytes_read = self
-      .pax_parser
-      .parse(&mut self.violation_handler, pax_bytes)?;
+    let vh = &mut VHW(&mut self.violation_handler);
+
+    let bytes_read = self.pax_parser.parse(vh, pax_bytes)?;
     reader.skip_buffered(bytes_read).unwrap_infallible();
 
     state.remaining_data -= bytes_read;
@@ -1295,11 +1316,12 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     reader: &mut Cursor<&[u8]>,
     state: StateParsingGnuSparse1_0,
   ) -> Result<TarParserState, TarParserError> {
-    let done = self.sparse_parser.parse(
-      &mut self.violation_handler,
-      reader,
-      &mut self.inode_state.sparse_file_instructions,
-    )?;
+    let vh = &mut VHW(&mut self.violation_handler);
+
+    let done =
+      self
+        .sparse_parser
+        .parse(vh, reader, &mut self.inode_state.sparse_file_instructions)?;
 
     if !done {
       // We still have some data to read, so we keep the parser state.
