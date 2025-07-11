@@ -29,6 +29,10 @@ use crate::{
   BufferedRead as _, LimitedBackingBufferError, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
 };
 
+pub(crate) fn align_to_block_size(size: usize) -> usize {
+  (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1)
+}
+
 pub struct TarParserLimits {
   /// The maximum number of sparse file instructions allowed in a single file.
   max_sparse_file_instructions: usize,
@@ -1108,7 +1112,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     // We parsed everything from the header block and released the buffer.
 
     let data_after_header = *self.inode_state.data_after_header_size.get().unwrap_or(&0);
-    let data_after_header_block_aligned = (data_after_header + 511) & !511; // align to next 512 byte block
+    let data_after_header_block_aligned = align_to_block_size(data_after_header); // align to next 512 byte block
     let padding_after_data = data_after_header_block_aligned - data_after_header; // padding after header block
 
     // now we match on the typeflag

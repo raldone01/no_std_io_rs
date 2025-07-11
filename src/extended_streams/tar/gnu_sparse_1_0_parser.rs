@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use crate::{
   extended_streams::tar::{
-    corrupt_field_to_tar_err, limit_exceeded_to_tar_err, CorruptFieldContext,
+    align_to_block_size, corrupt_field_to_tar_err, limit_exceeded_to_tar_err, CorruptFieldContext,
     IgnoreTarViolationHandler, LimitExceededContext, SparseFileInstruction, SparseFormat,
     TarParserError, TarViolationHandler, VHW,
   },
@@ -213,7 +213,7 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
     if state.remaining_maps == 0 {
       // All maps have been parsed. We still need to skip padding.
       let bytes_read = self.bytes_read + cursor.position() - initial_cursor_position;
-      let remaining_padding = ((bytes_read + 511) & !511) - bytes_read;
+      let remaining_padding = align_to_block_size(bytes_read) - bytes_read;
       return Ok(ParserState::SkippingPadding(StateSkippingPadding {
         remaining_padding,
       }));
@@ -300,8 +300,8 @@ mod tests {
     bytewise: bool,
   ) -> Result<LimitedVec<SparseFileInstruction>, TarParserError> {
     // Pad the input to a multiple of 512 bytes
-    let padding_length = (input.len() + 511) & !511;
-    let mut input_padded = vec![0; padding_length];
+    let padded_length = align_to_block_size(input.len());
+    let mut input_padded = vec![0; padded_length];
     input_padded[..input.len()].copy_from_slice(input);
     let mut cursor = Cursor::new(input_padded.as_slice());
     let mut sparse_file_instructions = LimitedVec::new(usize::MAX);
