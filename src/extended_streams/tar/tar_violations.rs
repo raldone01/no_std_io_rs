@@ -51,3 +51,58 @@ impl TarViolationHandler for IgnoreTarViolationHandler {
     true
   }
 }
+
+/// A wrapper around a `TarViolationHandler` that provides convenience methods for handling violations.
+pub(crate) struct VHW<'a, VH: TarViolationHandler>(pub(crate) &'a mut VH);
+
+impl<VH: TarViolationHandler> VHW<'_, VH> {
+  /// Handles a potential violation in result form by calling the violation handler.
+  pub(crate) fn hpvr<T, E: Into<TarParserError>>(
+    &mut self,
+    operation_result: Result<T, E>,
+  ) -> Result<Option<T>, TarParserError> {
+    match operation_result {
+      Ok(v) => Ok(Some(v)),
+      Err(e) => {
+        let e = e.into();
+        if self.0.handle(&e, false) {
+          Ok(None)
+        } else {
+          Err(e)
+        }
+      },
+    }
+  }
+
+  /// Handles a potential violation in error form by calling the violation handler.
+  pub(crate) fn hpve<E: Into<TarParserError>>(&mut self, error: E) -> Result<(), TarParserError> {
+    let e = error.into();
+    if self.0.handle(&e, false) {
+      Ok(())
+    } else {
+      Err(e)
+    }
+  }
+
+  /// Handles a fatal violation in result form by calling the violation handler.
+  pub(crate) fn hfvr<T, E: Into<TarParserError>>(
+    &mut self,
+    operation_result: Result<T, E>,
+  ) -> Result<T, TarParserError> {
+    match operation_result {
+      Ok(v) => Ok(v),
+      Err(e) => {
+        let e = e.into();
+        let _fatal_error = self.0.handle(&e, true);
+        Err(e)
+      },
+    }
+  }
+
+  /// Handles a fatal violation in error form by calling the violation handler.
+  pub(crate) fn hfve<E: Into<TarParserError>>(&mut self, error: E) -> TarParserError {
+    let e = error.into();
+    let _fatal_error = self.0.handle(&e, true);
+    e
+  }
+}

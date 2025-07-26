@@ -1,14 +1,12 @@
-use core::{convert::Infallible, fmt::Display, num::ParseIntError, str::Utf8Error};
+use core::convert::Infallible;
 
 use alloc::{
-  collections::TryReserveError,
   format,
   string::{String, ToString as _},
   vec::Vec,
 };
 
 use hashbrown::HashMap;
-use thiserror::Error;
 use zerocopy::FromBytes as _;
 
 use crate::{
@@ -16,343 +14,22 @@ use crate::{
   extended_streams::tar::{
     confident_value::ConfidentValue,
     gnu_sparse_1_0_parser::GnuSparse1_0Parser,
-    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser, PaxParserError},
+    pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
-      GnuSparseInstruction, ParseOctalError, TarHeaderChecksumError, TarTypeFlag,
-      UstarHeaderAdditions, V7Header, BLOCK_SIZE, TAR_ZERO_HEADER,
+      GnuSparseInstruction, TarTypeFlag, UstarHeaderAdditions, V7Header, BLOCK_SIZE,
+      TAR_ZERO_HEADER,
     },
-    BlockDeviceEntry, CharacterDeviceEntry, FileData, FileEntry, FilePermissions, HardLinkEntry,
-    IgnoreTarViolationHandler, RegularFileEntry, SparseFileInstruction, SymbolicLinkEntry,
-    TarInode, TarViolationHandler, TimeStamp,
+    BlockDeviceEntry, CharacterDeviceEntry, CorruptFieldContext, FileData, FileEntry,
+    FilePermissions, GeneralParseError, HardLinkEntry, IgnoreTarViolationHandler, RegularFileEntry,
+    SparseFileInstruction, SparseFormat, SymbolicLinkEntry, TarHeaderParserError, TarInode,
+    TarParserError, TarParserLimits, TarParserOptions, TarViolationHandler, TimeStamp, VHW,
   },
-  BufferedRead as _, LimitedBackingBufferError, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
+  BufferedRead as _, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
 };
 
 pub(crate) fn align_to_block_size(size: usize) -> usize {
   (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1)
-}
-
-pub struct TarParserLimits {
-  /// The maximum number of sparse file instructions allowed in a single file.
-  max_sparse_file_instructions: usize,
-  /// The maximum length of a PAX key or value in bytes.
-  /// This also limits the maximum file path length!
-  max_pax_key_value_length: usize,
-  /// The maximum number of global attributes that can be parsed.
-  max_global_attributes: usize,
-  /// The maximum number of unparsed global attributes that can be stored.
-  max_unparsed_global_attributes: usize,
-  /// The maximum number of unparsed local attributes that can be stored.
-  max_unparsed_local_attributes: usize,
-}
-
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum GeneralParseError {
-  #[error("Invalid octal number: {0}")]
-  InvalidOctalNumber(#[from] ParseOctalError),
-  #[error("Invalid UTF-8 string: {0}")]
-  InvalidUtf8(#[from] Utf8Error),
-  #[error("Invalid integer: {0}")]
-  InvalidInteger(#[from] ParseIntError),
-}
-
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum TarHeaderParserError {
-  #[error("Unknown magic+version: {magic:?}+{version:?}")]
-  UnknownHeaderMagicVersion { magic: [u8; 6], version: [u8; 2] },
-  #[error("Checksum error: {0}")]
-  CorruptHeaderChecksum(#[from] TarHeaderChecksumError),
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum CorruptFieldContext {
-  HeaderSize,
-  HeaderName,
-  HeaderMode,
-  HeaderUid,
-  HeaderGid,
-  HeaderMtime,
-  HeaderLinkname,
-  HeaderUname,
-  HeaderGname,
-  HeaderDevMajor,
-  HeaderDevMinor,
-  HeaderAtime,
-  HeaderCtime,
-  HeaderRealSize,
-  HeaderPrefix,
-  GnuSparseNumberOfMaps(SparseFormat),
-  GnuSparseMapOffsetValue(SparseFormat),
-  GnuSparseMapSizeValue(SparseFormat),
-  GnuSparseRealFileSize(SparseFormat),
-  GnuSparseMajorVersion,
-  GnuSparseMinorVersion,
-  PaxWellKnownAtime,
-  PaxWellKnownGid,
-  PaxWellKnownMtime,
-  PaxWellKnownCtime,
-  PaxWellKnownSize,
-  PaxWellKnownUid,
-  PaxKvLength,
-  PaxKvValue,
-  PaxKvKey,
-}
-
-impl Display for CorruptFieldContext {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    match self {
-      CorruptFieldContext::HeaderSize => write!(f, "header.size"),
-      CorruptFieldContext::HeaderName => write!(f, "header.name"),
-      CorruptFieldContext::HeaderMode => write!(f, "header.mode"),
-      CorruptFieldContext::HeaderUid => write!(f, "header.uid"),
-      CorruptFieldContext::HeaderGid => write!(f, "header.gid"),
-      CorruptFieldContext::HeaderMtime => write!(f, "header.mtime"),
-      CorruptFieldContext::HeaderLinkname => write!(f, "header.linkname"),
-      CorruptFieldContext::HeaderUname => write!(f, "header.uname"),
-      CorruptFieldContext::HeaderGname => write!(f, "header.gname"),
-      CorruptFieldContext::HeaderDevMajor => write!(f, "header.dev_major"),
-      CorruptFieldContext::HeaderDevMinor => write!(f, "header.dev_minor"),
-      CorruptFieldContext::HeaderAtime => write!(f, "header.atime"),
-      CorruptFieldContext::HeaderCtime => write!(f, "header.ctime"),
-      CorruptFieldContext::HeaderRealSize => write!(f, "header.real_size"),
-      CorruptFieldContext::HeaderPrefix => write!(f, "header.prefix"),
-      CorruptFieldContext::GnuSparseNumberOfMaps(version) => {
-        write!(
-          f,
-          "gnu_sparse.{}.number_of_maps",
-          version.to_version_string()
-        )
-      },
-      CorruptFieldContext::GnuSparseMapOffsetValue(version) => {
-        write!(
-          f,
-          "gnu_sparse.{}.map_entry.offset",
-          version.to_version_string()
-        )
-      },
-      CorruptFieldContext::GnuSparseMapSizeValue(version) => {
-        write!(
-          f,
-          "gnu_sparse.{}.map_entry.size",
-          version.to_version_string()
-        )
-      },
-      CorruptFieldContext::GnuSparseRealFileSize(version) => {
-        write!(
-          f,
-          "gnu_sparse.{}.real_file_size",
-          version.to_version_string()
-        )
-      },
-      CorruptFieldContext::GnuSparseMajorVersion => write!(f, "gnu_sparse.major_version"),
-      CorruptFieldContext::GnuSparseMinorVersion => write!(f, "gnu_sparse.minor_version"),
-      CorruptFieldContext::PaxWellKnownAtime => write!(f, "pax.well_known.atime"),
-      CorruptFieldContext::PaxWellKnownGid => write!(f, "pax.well_known.gid"),
-      CorruptFieldContext::PaxWellKnownMtime => write!(f, "pax.well_known.mtime"),
-      CorruptFieldContext::PaxWellKnownCtime => write!(f, "pax.well_known.ctime"),
-      CorruptFieldContext::PaxWellKnownSize => write!(f, "pax.well_known.size"),
-      CorruptFieldContext::PaxWellKnownUid => write!(f, "pax.well_known.uid"),
-      CorruptFieldContext::PaxKvLength => write!(f, "pax.length_field"),
-      CorruptFieldContext::PaxKvValue => write!(f, "pax.value_field"),
-      CorruptFieldContext::PaxKvKey => write!(f, "pax.key_field"),
-    }
-  }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LimitExceededContext {
-  GnuSparse1_0MapDecimalStringTooLong,
-  GnuSparse1_0MapOffsetEntryDecimalStringTooLong,
-  GnuSparse1_0MapSizeEntryDecimalStringTooLong,
-  TooManySparseFileInstructions,
-  PaxLengthFieldDecimalStringTooLong,
-  PaxKvKeyTooLong,
-  PaxKvValueTooLong,
-  PaxTooManyUnparsedGlobalAttributes,
-  PaxTooManyUnparsedLocalAttributes,
-  PaxTooManyGlobalAttributes,
-}
-
-impl LimitExceededContext {
-  pub(crate) fn context_unit(&self) -> (&'static str, &'static str) {
-    match self {
-      Self::GnuSparse1_0MapDecimalStringTooLong => (
-        "bytes",
-        "The decimal string for the number of sparse maps is too long",
-      ),
-      Self::GnuSparse1_0MapOffsetEntryDecimalStringTooLong => (
-        "bytes",
-        "The decimal string for a sparse map offset entry is too long",
-      ),
-      Self::GnuSparse1_0MapSizeEntryDecimalStringTooLong => (
-        "bytes",
-        "The decimal string for a sparse map size entry is too long",
-      ),
-      Self::TooManySparseFileInstructions => (
-        "sparse file instructions",
-        "Too many sparse file instructions",
-      ),
-      Self::PaxLengthFieldDecimalStringTooLong => (
-        "bytes",
-        "The decimal string for the PAX length field is too long",
-      ),
-      Self::PaxKvKeyTooLong => ("bytes", "The PAX key string is too long"),
-      Self::PaxKvValueTooLong => ("bytes", "The PAX value string is too long"),
-      Self::PaxTooManyUnparsedGlobalAttributes => (
-        "unparsed global PAX attributes",
-        "Too many unparsed global PAX attributes",
-      ),
-      Self::PaxTooManyUnparsedLocalAttributes => (
-        "unparsed local PAX attributes",
-        "Too many unparsed local PAX attributes",
-      ),
-      Self::PaxTooManyGlobalAttributes => {
-        ("global PAX attributes", "Too many global PAX attributes")
-      },
-    }
-  }
-
-  pub(crate) fn context_str(&self) -> &'static str {
-    match self {
-      Self::GnuSparse1_0MapDecimalStringTooLong => "gnu_sparse.1.0.map.number_of_maps",
-      Self::GnuSparse1_0MapOffsetEntryDecimalStringTooLong => "gnu_sparse.1.0.map_entry.offset",
-      Self::GnuSparse1_0MapSizeEntryDecimalStringTooLong => "gnu_sparse.1.0.map_entry.size",
-      Self::TooManySparseFileInstructions => "sparse_file_instructions",
-      Self::PaxLengthFieldDecimalStringTooLong => "pax.length_field",
-      Self::PaxKvKeyTooLong => "pax.key_field",
-      Self::PaxKvValueTooLong => "pax.value_field",
-      Self::PaxTooManyUnparsedGlobalAttributes => "pax.unparsed_global_attributes",
-      Self::PaxTooManyUnparsedLocalAttributes => "pax.unparsed_local_attributes",
-      Self::PaxTooManyGlobalAttributes => "pax.global_attributes",
-    }
-  }
-}
-
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum GeneralTryReserveError {
-  #[error("Core allocation error: {0}")]
-  CoreTryReserveError(#[from] TryReserveError),
-  #[error("HashBrown allocation error: {0:?}")]
-  HashBrownTryReserveError(hashbrown::TryReserveError),
-  // FIXME: Why does the #[from] not work here?
-  //HashBrownTryReserveError(#[from] hashbrown::TryReserveError),
-}
-
-impl ::core::convert::From<hashbrown::TryReserveError> for GeneralTryReserveError {
-  fn from(source: hashbrown::TryReserveError) -> Self {
-    GeneralTryReserveError::HashBrownTryReserveError { 0: source }
-  }
-}
-
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum TarParserError {
-  #[error("Tar header parser error: {0}")]
-  HeaderParserError(#[from] TarHeaderParserError),
-  #[error("PAX parser error: {0}")]
-  PaxParserError(#[from] PaxParserError),
-  #[error("Limit of {limit} {unit} exceeded: {context}", unit = context.context_unit().1, context = context.context_unit().0)]
-  LimitExceeded {
-    limit: usize,
-    context: LimitExceededContext,
-  },
-  #[error("Allocation error: {try_reserve_error} while parsing: {context}", context = context.context_str())]
-  TryReserveError {
-    try_reserve_error: GeneralTryReserveError,
-    context: LimitExceededContext,
-  },
-  #[error("Parsing field {field} failed: {error}")]
-  CorruptField {
-    field: CorruptFieldContext,
-    error: GeneralParseError,
-  },
-}
-
-#[must_use]
-pub(crate) fn corrupt_field_to_tar_err<'a, T: Into<GeneralParseError>>(
-  field: CorruptFieldContext,
-) -> impl FnOnce(T) -> TarParserError + 'a {
-  move |error| {
-    let err = TarParserError::CorruptField {
-      field,
-      error: error.into(),
-    }
-    .into();
-    err
-  }
-}
-
-#[must_use]
-pub(crate) fn limit_exceeded_to_tar_err<'a, TryReserveError>(
-  limit: usize,
-  context: LimitExceededContext,
-) -> impl FnOnce(LimitedBackingBufferError<TryReserveError>) -> TarParserError + 'a
-where
-  GeneralTryReserveError: From<TryReserveError>,
-{
-  move |error| match error {
-    LimitedBackingBufferError::MemoryLimitExceeded(_bytes_size) => {
-      TarParserError::LimitExceeded { limit, context }
-    },
-    LimitedBackingBufferError::ResizeError(alloc_error) => TarParserError::TryReserveError {
-      try_reserve_error: alloc_error.into(),
-      context,
-    },
-  }
-}
-
-pub(crate) struct VHW<'a, VH: TarViolationHandler>(pub(crate) &'a mut VH);
-
-impl<VH: TarViolationHandler> VHW<'_, VH> {
-  /// Handles a potential violation in result form by calling the violation handler.
-  pub(crate) fn hpvr<T, E: Into<TarParserError>>(
-    &mut self,
-    operation_result: Result<T, E>,
-  ) -> Result<Option<T>, TarParserError> {
-    match operation_result {
-      Ok(v) => Ok(Some(v)),
-      Err(e) => {
-        let e = e.into();
-        if self.0.handle(&e, false) {
-          Ok(None)
-        } else {
-          Err(e)
-        }
-      },
-    }
-  }
-
-  /// Handles a potential violation in error form by calling the violation handler.
-  pub(crate) fn hpve<E: Into<TarParserError>>(&mut self, error: E) -> Result<(), TarParserError> {
-    let e = error.into();
-    if self.0.handle(&e, false) {
-      Ok(())
-    } else {
-      Err(e)
-    }
-  }
-
-  /// Handles a fatal violation in result form by calling the violation handler.
-  pub(crate) fn hfvr<T, E: Into<TarParserError>>(
-    &mut self,
-    operation_result: Result<T, E>,
-  ) -> Result<T, TarParserError> {
-    match operation_result {
-      Ok(v) => Ok(v),
-      Err(e) => {
-        let e = e.into();
-        let _fatal_error = self.0.handle(&e, true);
-        Err(e)
-      },
-    }
-  }
-
-  /// Handles a fatal violation in error form by calling the violation handler.
-  pub(crate) fn hfve<E: Into<TarParserError>>(&mut self, error: E) -> TarParserError {
-    let e = error.into();
-    let _fatal_error = self.0.handle(&e, true);
-    e
-  }
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -369,106 +46,6 @@ impl From<PaxConfidence> for TarConfidence {
     match value {
       PaxConfidence::LOCAL => TarConfidence::PaxLocal,
       PaxConfidence::GLOBAL => TarConfidence::PaxGlobal,
-    }
-  }
-}
-
-pub struct TarParserOptions {
-  /// Tar can contain previous versions of the same file.
-  ///
-  /// If true, only the last version of each file will be kept.
-  /// If false, all versions of each file will be kept.
-  keep_only_last: bool,
-  initial_global_extended_attributes: HashMap<String, String>,
-  tar_parser_limits: TarParserLimits,
-}
-
-impl Default for TarParserOptions {
-  fn default() -> Self {
-    Self {
-      keep_only_last: true,
-      initial_global_extended_attributes: HashMap::new(),
-      tar_parser_limits: TarParserLimits {
-        max_sparse_file_instructions: 2048,
-        max_pax_key_value_length: 1024 * 8,
-        max_global_attributes: 1024,
-        max_unparsed_global_attributes: 1024,
-        max_unparsed_local_attributes: 1024,
-      },
-    }
-  }
-}
-
-/// Extension trait for Option to conditionally insert a value using a closure that returns an Option,
-/// only when `self` is None.
-pub(crate) trait GetOrInsertWithOption<T> {
-  /// If `self` is Some, returns a mutable reference to the value.
-  /// Otherwise, runs the closure. If the closure returns Some, inserts it and returns a mutable reference.
-  /// If the closure returns None, leaves `self` as None and returns None.
-  fn get_or_insert_with_option<F>(&mut self, f: F) -> Option<&mut T>
-  where
-    F: FnOnce() -> Option<T>;
-}
-
-impl<T> GetOrInsertWithOption<T> for Option<T> {
-  fn get_or_insert_with_option<F>(&mut self, f: F) -> Option<&mut T>
-  where
-    F: FnOnce() -> Option<T>,
-  {
-    if self.is_none() {
-      *self = f();
-    }
-    self.as_mut()
-  }
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub(crate) enum SparseFormat {
-  GnuOld,
-  Gnu0_0,
-  Gnu0_1,
-  Gnu1_0,
-  GnuUnknownSparseFormat { major: u32, minor: u32 },
-}
-
-impl SparseFormat {
-  /// Returns the major and minor version of the GNU sparse format.
-  #[must_use]
-  pub fn get_major_minor(&self) -> (u32, u32) {
-    match self {
-      SparseFormat::GnuOld => (0, 0),
-      SparseFormat::Gnu0_0 => (0, 0),
-      SparseFormat::Gnu0_1 => (0, 1),
-      SparseFormat::Gnu1_0 => (1, 0),
-      SparseFormat::GnuUnknownSparseFormat { major, minor } => (*major, *minor),
-    }
-  }
-
-  /// Creates a new `SparseFormat` from the major and minor version.
-  #[must_use]
-  pub fn try_from_gnu_version(major: Option<u32>, minor: Option<u32>) -> Option<Self> {
-    Some(match (major, minor) {
-      (Some(0), Some(0) | None) => SparseFormat::Gnu0_0,
-      (Some(0) | None, Some(1)) => SparseFormat::Gnu0_1,
-      (Some(1), Some(0)) => SparseFormat::Gnu1_0,
-      (None, None) => return None,
-      (major, minor) => SparseFormat::GnuUnknownSparseFormat {
-        major: major.unwrap_or(0),
-        minor: minor.unwrap_or(0),
-      },
-    })
-  }
-
-  #[must_use]
-  pub fn to_version_string(&self) -> String {
-    match self {
-      SparseFormat::GnuOld => "gnu_old".to_string(),
-      SparseFormat::Gnu0_0 => "gnu_0.0".to_string(),
-      SparseFormat::Gnu0_1 => "gnu_0.1".to_string(),
-      SparseFormat::Gnu1_0 => "gnu_1.0".to_string(),
-      SparseFormat::GnuUnknownSparseFormat { major, minor } => {
-        format!("gnu_{major}.{minor}")
-      },
     }
   }
 }
@@ -714,9 +291,6 @@ impl<VH: TarViolationHandler> TarParser<VH> {
 
   fn recover_internal(&mut self) -> InodeBuilder {
     self.pax_parser.recover();
-    self
-      .pax_parser
-      .load_pax_attributes_into_inode_builder(&mut self.inode_state);
     self.parser_state = Default::default();
     core::mem::replace(
       &mut self.inode_state,

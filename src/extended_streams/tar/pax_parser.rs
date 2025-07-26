@@ -68,14 +68,6 @@ impl<T> PaxConfidentValue<T> {
     }
   }
 
-  pub fn get_mut(&mut self) -> Option<&mut T> {
-    if let Some(local_value) = &mut self.local {
-      Some(local_value)
-    } else {
-      self.global.as_mut()
-    }
-  }
-
   /// Returns the local value if it exists, otherwise returns the global value.
   #[must_use]
   pub fn get_with_confidence(&self) -> Option<(PaxConfidence, &T)> {
@@ -259,7 +251,8 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     })
   }
 
-  pub fn load_pax_attributes_into_inode_builder(&self, inode_builder: &mut InodeBuilder) {
+  /// This function is destructive. Recover must be called before reusing the parser.
+  pub fn load_pax_attributes_into_inode_builder(&mut self, inode_builder: &mut InodeBuilder) {
     if let Some(sparse_format) = self.get_sparse_format() {
       if inode_builder.sparse_format.is_none() {
         inode_builder.sparse_format = Some(sparse_format);
@@ -277,8 +270,11 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
               .or(self.gnu_sparse_realsize_0_01.get_with_confidence()),
           ));
         if sparse_format == SparseFormat::Gnu0_0 || sparse_format == SparseFormat::Gnu0_1 {
-          // TODO: avoid clone
-          inode_builder.sparse_file_instructions = self.gnu_sparse_map_local.clone();
+          inode_builder.sparse_file_instructions.clear();
+          core::mem::swap(
+            &mut inode_builder.sparse_file_instructions,
+            &mut self.gnu_sparse_map_local,
+          );
         }
       }
     }
@@ -380,7 +376,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     let mut offset = None;
     let mut len_parts = 0;
     for (i, part) in parts.enumerate() {
-      len_parts = i;
+      len_parts = i + 1;
       if i % 2 == 0 {
         // This is an offset
         offset = vh.hpvr(part.parse::<u64>().map_err(corrupt_field_to_tar_err(
@@ -421,7 +417,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   pub fn drain_local_unparsed_attributes(&mut self) -> HashMap<String, String> {
     // TODO: reuse the allocation
-    let mut combined_attributes = self.global_attributes.as_hash_map().clone();
+    let mut combined_attributes = self.unparsed_global_attributes.as_hash_map().clone();
     combined_attributes.extend(self.unparsed_local_attributes.drain());
     combined_attributes
   }

@@ -4,6 +4,15 @@ mod tar_violations;
 pub(crate) mod tar_constants;
 mod tar_inode;
 
+mod parsing_errors;
+pub use parsing_errors::*;
+
+mod parser_options;
+pub use parser_options::*;
+
+mod sparse_format;
+pub use sparse_format::*;
+
 pub use tar_parser::*;
 pub use tar_violations::*;
 // pub use writer_tar::*;
