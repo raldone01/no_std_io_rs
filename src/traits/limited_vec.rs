@@ -43,6 +43,12 @@ impl<T> LimitedVec<T> {
 
   #[inline]
   #[must_use]
+  pub fn as_vec(&self) -> &Vec<T> {
+    &self.vec
+  }
+
+  #[inline]
+  #[must_use]
   pub fn to_vec(self) -> Vec<T> {
     self.vec
   }
@@ -349,7 +355,6 @@ impl<T> core::ops::Deref for LimitedVec<T> {
   type Target = [T];
 
   #[inline]
-
   fn deref(&self) -> &[T] {
     self.as_slice()
   }
@@ -366,7 +371,6 @@ impl<T, I: SliceIndex<[T]>> Index<I> for LimitedVec<T> {
   type Output = I::Output;
 
   #[inline]
-
   fn index(&self, index: I) -> &Self::Output {
     Index::index(&**self, index)
   }

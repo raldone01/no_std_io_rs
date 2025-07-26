@@ -39,6 +39,12 @@ pub struct TarParserLimits {
   /// The maximum length of a PAX key or value in bytes.
   /// This also limits the maximum file path length!
   max_pax_key_value_length: usize,
+  /// The maximum number of global attributes that can be parsed.
+  max_global_attributes: usize,
+  /// The maximum number of unparsed global attributes that can be stored.
+  max_unparsed_global_attributes: usize,
+  /// The maximum number of unparsed local attributes that can be stored.
+  max_unparsed_local_attributes: usize,
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -163,6 +169,9 @@ pub enum LimitExceededContext {
   PaxLengthFieldDecimalStringTooLong,
   PaxKvKeyTooLong,
   PaxKvValueTooLong,
+  PaxTooManyUnparsedGlobalAttributes,
+  PaxTooManyUnparsedLocalAttributes,
+  PaxTooManyGlobalAttributes,
 }
 
 impl LimitExceededContext {
@@ -190,6 +199,17 @@ impl LimitExceededContext {
       ),
       Self::PaxKvKeyTooLong => ("bytes", "The PAX key string is too long"),
       Self::PaxKvValueTooLong => ("bytes", "The PAX value string is too long"),
+      Self::PaxTooManyUnparsedGlobalAttributes => (
+        "unparsed global PAX attributes",
+        "Too many unparsed global PAX attributes",
+      ),
+      Self::PaxTooManyUnparsedLocalAttributes => (
+        "unparsed local PAX attributes",
+        "Too many unparsed local PAX attributes",
+      ),
+      Self::PaxTooManyGlobalAttributes => {
+        ("global PAX attributes", "Too many global PAX attributes")
+      },
     }
   }
 
@@ -202,7 +222,26 @@ impl LimitExceededContext {
       Self::PaxLengthFieldDecimalStringTooLong => "pax.length_field",
       Self::PaxKvKeyTooLong => "pax.key_field",
       Self::PaxKvValueTooLong => "pax.value_field",
+      Self::PaxTooManyUnparsedGlobalAttributes => "pax.unparsed_global_attributes",
+      Self::PaxTooManyUnparsedLocalAttributes => "pax.unparsed_local_attributes",
+      Self::PaxTooManyGlobalAttributes => "pax.global_attributes",
     }
+  }
+}
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum GeneralTryReserveError {
+  #[error("Core allocation error: {0}")]
+  CoreTryReserveError(#[from] TryReserveError),
+  #[error("HashBrown allocation error: {0:?}")]
+  HashBrownTryReserveError(hashbrown::TryReserveError),
+  // FIXME: Why does the #[from] not work here?
+  //HashBrownTryReserveError(#[from] hashbrown::TryReserveError),
+}
+
+impl ::core::convert::From<hashbrown::TryReserveError> for GeneralTryReserveError {
+  fn from(source: hashbrown::TryReserveError) -> Self {
+    GeneralTryReserveError::HashBrownTryReserveError { 0: source }
   }
 }
 
@@ -219,7 +258,7 @@ pub enum TarParserError {
   },
   #[error("Allocation error: {try_reserve_error} while parsing: {context}", context = context.context_str())]
   TryReserveError {
-    try_reserve_error: TryReserveError,
+    try_reserve_error: GeneralTryReserveError,
     context: LimitExceededContext,
   },
   #[error("Parsing field {field} failed: {error}")]
@@ -244,16 +283,19 @@ pub(crate) fn corrupt_field_to_tar_err<'a, T: Into<GeneralParseError>>(
 }
 
 #[must_use]
-pub(crate) fn limit_exceeded_to_tar_err<'a>(
+pub(crate) fn limit_exceeded_to_tar_err<'a, TryReserveError>(
   limit: usize,
   context: LimitExceededContext,
-) -> impl FnOnce(LimitedBackingBufferError<TryReserveError>) -> TarParserError + 'a {
+) -> impl FnOnce(LimitedBackingBufferError<TryReserveError>) -> TarParserError + 'a
+where
+  GeneralTryReserveError: From<TryReserveError>,
+{
   move |error| match error {
     LimitedBackingBufferError::MemoryLimitExceeded(_bytes_size) => {
       TarParserError::LimitExceeded { limit, context }
     },
     LimitedBackingBufferError::ResizeError(alloc_error) => TarParserError::TryReserveError {
-      try_reserve_error: alloc_error,
+      try_reserve_error: alloc_error.into(),
       context,
     },
   }
@@ -349,6 +391,9 @@ impl Default for TarParserOptions {
       tar_parser_limits: TarParserLimits {
         max_sparse_file_instructions: 2048,
         max_pax_key_value_length: 1024 * 8,
+        max_global_attributes: 1024,
+        max_unparsed_global_attributes: 1024,
+        max_unparsed_local_attributes: 1024,
       },
     }
   }
@@ -652,6 +697,9 @@ impl<VH: TarViolationHandler> TarParser<VH> {
       pax_parser: PaxParser::try_new(
         &mut violation_handler_wrapped,
         options.initial_global_extended_attributes,
+        options.tar_parser_limits.max_global_attributes,
+        options.tar_parser_limits.max_unparsed_global_attributes,
+        options.tar_parser_limits.max_unparsed_local_attributes,
         options.tar_parser_limits.max_pax_key_value_length,
         options.tar_parser_limits.max_sparse_file_instructions,
       )?,

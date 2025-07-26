@@ -22,8 +22,8 @@ use crate::{
     LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError, TarViolationHandler,
     TimeStamp, VHW,
   },
-  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
-  UnwrapInfallible, WriteAllError,
+  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedHashMap,
+  LimitedVec, UnwrapInfallible, WriteAllError,
 };
 
 // TODO: Limit the hash maps/pax_key_value pair count to a reasonable number
@@ -145,10 +145,10 @@ pub struct SparseFileInstructionBuilder {
 
 /// "%d %s=%s\n", <length>, <keyword>, <value>
 pub struct PaxParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
-  global_attributes: HashMap<String, String>,
+  global_attributes: LimitedHashMap<String, String>,
   // unknown/unparsed attributes
-  unparsed_global_attributes: HashMap<String, String>,
-  unparsed_attributes: HashMap<String, String>,
+  unparsed_global_attributes: LimitedHashMap<String, String>,
+  unparsed_local_attributes: LimitedHashMap<String, String>,
 
   // parsed attributes
   gnu_sparse_name_01_01: PaxConfidentValue<String>,
@@ -182,13 +182,16 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   pub fn try_new(
     vh: &mut VHW<'_, VH>,
     initial_global_extended_attributes: HashMap<String, String>,
+    max_global_attributes: usize,
+    max_unparsed_global_attributes: usize,
+    max_unparsed_local_attributes: usize,
     max_pax_key_value_length: usize,
     max_sparse_file_instructions: usize,
   ) -> Result<Self, TarParserError> {
     let mut selv = Self {
-      global_attributes: HashMap::new(),
-      unparsed_global_attributes: HashMap::new(),
-      unparsed_attributes: HashMap::new(),
+      global_attributes: LimitedHashMap::new(max_global_attributes),
+      unparsed_global_attributes: LimitedHashMap::new(max_unparsed_global_attributes),
+      unparsed_local_attributes: LimitedHashMap::new(max_unparsed_local_attributes),
       gnu_sparse_name_01_01: PaxConfidentValue::default(),
       gnu_sparse_realsize_1_0: PaxConfidentValue::default(),
       gnu_sparse_major: PaxConfidentValue::default(),
@@ -219,7 +222,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   #[must_use]
   pub fn global_extended_attributes(&self) -> &HashMap<String, String> {
-    &self.global_attributes
+    self.global_attributes.as_hash_map()
   }
 
   #[must_use]
@@ -321,7 +324,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
 
   pub fn recover(&mut self) {
     // Reset the local unparsed attributes
-    self.unparsed_attributes.clear();
+    self.unparsed_local_attributes.clear();
     // Reset all parsed local attributes
     self.gnu_sparse_name_01_01.reset_local();
     self.gnu_sparse_realsize_1_0.reset_local();
@@ -410,7 +413,11 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   }
 
   pub fn drain_local_unparsed_attributes(&mut self) -> HashMap<String, String> {
-    let mut local_unparsed_attributes = self.unparsed_attributes.drain().collect::<HashMap<_, _>>();
+    // TODO: reuse the allocation
+    let mut local_unparsed_attributes = self
+      .unparsed_local_attributes
+      .drain()
+      .collect::<HashMap<_, _>>();
     // Add global attributes where the key does not already exist in local attributes.
     for (key, value) in self.global_attributes.iter() {
       if !local_unparsed_attributes.contains_key(key) {
@@ -427,6 +434,17 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     key: String,
     value: String,
   ) -> Result<(), TarParserError> {
+    if confidence == PaxConfidence::GLOBAL {
+      vh.hpvr(
+        self
+          .global_attributes
+          .insert(key.clone(), value.clone())
+          .map_err(limit_exceeded_to_tar_err(
+            self.global_attributes.max_keys(),
+            LimitExceededContext::PaxTooManyGlobalAttributes,
+          )),
+      )?;
+    }
     match key.as_str() {
       GNU_SPARSE_NAME_01_01 => {
         if confidence == PaxConfidence::LOCAL {
@@ -638,10 +656,20 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         // Unparsed attribute store it
         match confidence {
           PaxConfidence::GLOBAL => {
-            self.global_attributes.insert(key, value);
+            vh.hpvr(self.unparsed_global_attributes.insert(key, value).map_err(
+              limit_exceeded_to_tar_err(
+                self.unparsed_global_attributes.max_keys(),
+                LimitExceededContext::PaxTooManyUnparsedGlobalAttributes,
+              ),
+            ))?;
           },
           PaxConfidence::LOCAL => {
-            self.unparsed_attributes.insert(key, value);
+            vh.hpvr(self.unparsed_local_attributes.insert(key, value).map_err(
+              limit_exceeded_to_tar_err(
+                self.unparsed_local_attributes.max_keys(),
+                LimitExceededContext::PaxTooManyUnparsedLocalAttributes,
+              ),
+            ))?;
           },
         }
       },
@@ -859,6 +887,9 @@ mod tests {
       HashMap::new(),
       usize::MAX,
       usize::MAX,
+      usize::MAX,
+      usize::MAX,
+      usize::MAX,
     )
     .expect("Failed to create PaxParser")
   }
@@ -871,9 +902,16 @@ mod tests {
 
     let mut vh = IgnoreTarViolationHandler::default();
     let vh = &mut VHW(&mut vh);
-    let parser =
-      PaxParser::<IgnoreTarViolationHandler>::try_new(vh, globals, usize::MAX, usize::MAX)
-        .expect("Failed to create PaxParser with initial global attributes");
+    let parser = PaxParser::<IgnoreTarViolationHandler>::try_new(
+      vh,
+      globals,
+      usize::MAX,
+      usize::MAX,
+      usize::MAX,
+      usize::MAX,
+      usize::MAX,
+    )
+    .expect("Failed to create PaxParser with initial global attributes");
 
     assert_eq!(
       parser.gname.get_with_confidence(),
@@ -988,9 +1026,9 @@ mod tests {
     let data = b"21 SCHILY.fflags=bar\n12 uid=1000\n";
     drive_parser(&mut parser, data, false).unwrap();
 
-    assert_eq!(parser.unparsed_attributes.len(), 1);
+    assert_eq!(parser.unparsed_local_attributes.len(), 1);
     assert_eq!(
-      parser.unparsed_attributes.get("SCHILY.fflags"),
+      parser.unparsed_local_attributes.get("SCHILY.fflags"),
       Some(&"bar".to_string())
     );
 
@@ -998,7 +1036,7 @@ mod tests {
 
     assert_eq!(drained.len(), 1);
     assert_eq!(drained.get("SCHILY.fflags"), Some(&"bar".to_string()));
-    assert!(parser.unparsed_attributes.is_empty());
+    assert!(parser.unparsed_local_attributes.is_empty());
   }
 
   #[test]
