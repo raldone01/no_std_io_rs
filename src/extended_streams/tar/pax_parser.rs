@@ -26,12 +26,12 @@ use crate::{
   LimitedVec, UnwrapInfallible, WriteAllError,
 };
 
-// TODO: Limit the hash maps/pax_key_value pair count to a reasonable number
-
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum PaxParserError {
   #[error("A PAX key-value pair is missing a newline at the end")]
   KeyValuePairMissingNewline,
+  #[error("A gnu sparse map is malformed, expected an even number of parts found {0} parts")]
+  GnuSparseMapMalformed(usize),
   #[error("A well-known PAX key '{key}' appeared in the wrong context. Expected: {expected_context:?}, Actual: {actual_context:?}")]
   WellKnownKeyAppearedInWrongPaxContext {
     key: &'static str,
@@ -378,7 +378,9 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
   ) -> Result<(), TarParserError> {
     let parts = value.split(',');
     let mut offset = None;
+    let mut len_parts = 0;
     for (i, part) in parts.enumerate() {
+      len_parts = i;
       if i % 2 == 0 {
         // This is an offset
         offset = vh.hpvr(part.parse::<u64>().map_err(corrupt_field_to_tar_err(
@@ -409,22 +411,19 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         offset = None; // Reset offset for the next pair
       }
     }
+    if offset.is_some() {
+      return Err(TarParserError::PaxParserError(
+        PaxParserError::GnuSparseMapMalformed(len_parts),
+      ));
+    }
     Ok(())
   }
 
   pub fn drain_local_unparsed_attributes(&mut self) -> HashMap<String, String> {
     // TODO: reuse the allocation
-    let mut local_unparsed_attributes = self
-      .unparsed_local_attributes
-      .drain()
-      .collect::<HashMap<_, _>>();
-    // Add global attributes where the key does not already exist in local attributes.
-    for (key, value) in self.global_attributes.iter() {
-      if !local_unparsed_attributes.contains_key(key) {
-        local_unparsed_attributes.insert(key.clone(), value.clone());
-      }
-    }
-    local_unparsed_attributes
+    let mut combined_attributes = self.global_attributes.as_hash_map().clone();
+    combined_attributes.extend(self.unparsed_local_attributes.drain());
+    combined_attributes
   }
 
   fn ingest_attribute(
@@ -722,7 +721,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         .map_err(corrupt_field_to_tar_err(CorruptFieldContext::PaxKvLength)),
     )?;
 
-    let length = length.saturating_sub(state.kv_cursor.before().len() + 1);
+    let length = length.saturating_sub(state.kv_cursor.position() + 1);
     if length == 0 {
       // If the length is 0, we are done with this key-value pair
       return Ok(PaxParserState::default());
