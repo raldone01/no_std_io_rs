@@ -14,6 +14,7 @@ use crate::{
   extended_streams::tar::{
     confident_value::ConfidentValue,
     gnu_sparse_1_0_parser::GnuSparse1_0Parser,
+    limit_exceeded_to_tar_err,
     pax_parser::{PaxConfidence, PaxConfidentValue, PaxParser},
     tar_constants::{
       find_null_terminator_index, CommonHeaderAdditions, GnuHeaderAdditions, GnuHeaderExtSparse,
@@ -21,9 +22,10 @@ use crate::{
       TAR_ZERO_HEADER,
     },
     BlockDeviceEntry, CharacterDeviceEntry, CorruptFieldContext, FileData, FileEntry,
-    FilePermissions, GeneralParseError, HardLinkEntry, IgnoreTarViolationHandler, RegularFileEntry,
-    SparseFileInstruction, SparseFormat, SymbolicLinkEntry, TarHeaderParserError, TarInode,
-    TarParserError, TarParserLimits, TarParserOptions, TarViolationHandler, TimeStamp, VHW,
+    FilePermissions, GeneralParseError, HardLinkEntry, IgnoreTarViolationHandler,
+    LimitExceededContext, RegularFileEntry, SparseFileInstruction, SparseFormat, SymbolicLinkEntry,
+    TarHeaderParserError, TarInode, TarParserError, TarParserErrorKind, TarParserLimits,
+    TarParserOptions, TarViolationHandler, TimeStamp, VHW,
   },
   BufferedRead as _, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
 };
@@ -66,7 +68,7 @@ pub struct StateSkippingData {
   /// The amount of data that must be skipped.
   remaining_data: usize,
   /// The context for the skipped data, used for error messages and debugging.
-  context: &'static str,
+  _context: &'static str,
 }
 
 pub struct StateParsingGnuLongName {
@@ -92,7 +94,7 @@ struct StateParsingPaxData {
   remaining_data: usize,
   /// The amount of padding after the PAX data.
   padding_after: usize,
-  pax_mode: PaxConfidence,
+  _pax_mode: PaxConfidence,
 }
 
 struct StateParsingGnuSparse1_0 {
@@ -148,7 +150,7 @@ pub struct TarParser<VH: TarViolationHandler = IgnoreTarViolationHandler> {
 pub(crate) fn buffer_array<'a, const BUFFER_SIZE: usize>(
   reader: &'a mut Cursor<&[u8]>,
   temp_buffer: &'a mut Cursor<[u8; BUFFER_SIZE]>,
-) -> Result<Option<&'a [u8]>, TarParserError> {
+) -> Option<&'a [u8]> {
   // perform an incremental read into the tar header buffer
   let read_bytes = reader
     .read_buffered(temp_buffer.remaining())
@@ -156,7 +158,7 @@ pub(crate) fn buffer_array<'a, const BUFFER_SIZE: usize>(
 
   if read_bytes.len() == BUFFER_SIZE {
     // We can directly pass through the buffer so we don't have to copy it to the intermediate buffer.
-    return Ok(Some(read_bytes));
+    return Some(read_bytes);
   }
 
   // read bytes into the tar header buffer
@@ -167,10 +169,10 @@ pub(crate) fn buffer_array<'a, const BUFFER_SIZE: usize>(
     // We have a complete tar header block, so we can return it.
     temp_buffer.set_position(0); // reset the cursor for the next read
     let header_buffer = temp_buffer.after();
-    Ok(Some(header_buffer))
+    Some(header_buffer)
   } else {
     // We don't have a complete tar header block yet, so we return None.
-    Ok(None)
+    None
   }
 }
 
@@ -318,21 +320,33 @@ impl<VH: TarViolationHandler> TarParser<VH> {
   }
 
   fn parse_old_gnu_sparse_instructions(
+    vh: &mut VHW<'_, VH>,
     inode_state: &mut InodeBuilder,
     sparse_headers: &[GnuSparseInstruction],
-  ) {
+  ) -> Result<(), TarParserError> {
     debug_assert_eq!(inode_state.sparse_format, Some(SparseFormat::GnuOld));
     for sparse_header in sparse_headers {
       if sparse_header.is_empty() {
         continue;
       }
+      // TODO: handle error here
       if let Ok(instruction) = sparse_header.convert_to_sparse_instruction() {
-        inode_state.sparse_file_instructions.push(instruction);
+        vh.hfvr(
+          inode_state
+            .sparse_file_instructions
+            .push(instruction)
+            .map_err(limit_exceeded_to_tar_err(
+              inode_state.sparse_file_instructions.max_len(),
+              LimitExceededContext::TooManySparseFileInstructions,
+            )),
+        )?;
       } else {
+        // TODO: handle properly.
         // If we can't parse the sparse header, we just ignore it.
         // This is a best-effort approach.
       }
     }
+    Ok(())
   }
 
   fn finish_inode(&mut self, file_entry: impl FnOnce(&mut Self, InodeBuilder) -> FileEntry) {
@@ -421,7 +435,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     if data_after_header > 0 {
       TarParserState::SkippingData(StateSkippingData {
         remaining_data: data_after_header,
-        context,
+        _context: context,
       })
     } else {
       TarParserState::default()
@@ -431,8 +445,8 @@ impl<VH: TarViolationHandler> TarParser<VH> {
   #[must_use]
   fn map_corrupt_header_field<T: Into<GeneralParseError>>(
     field: CorruptFieldContext,
-  ) -> impl FnOnce(T) -> TarParserError {
-    move |error| TarParserError::CorruptField {
+  ) -> impl FnOnce(T) -> TarParserErrorKind {
+    move |error| TarParserErrorKind::CorruptField {
       field,
       error: error.into(),
     }
@@ -576,7 +590,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
 
     // TODO: fix strict mode recovery is not possible because we consume the buffer here.
     // We should wait to consume the buffer until we have fully parsed the header.
-    let header_buffer = match buffer_array(reader, &mut self.header_buffer)? {
+    let header_buffer = match buffer_array(reader, &mut self.header_buffer) {
       Some(buffer) => buffer,
       None => {
         // We don't have a complete buffer yet, so we need to wait for more data.
@@ -703,7 +717,11 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         // Handle sparse entries (Old GNU Format)
         if typeflag == TarTypeFlag::SparseOldGnu {
           self.inode_state.sparse_format = Some(SparseFormat::GnuOld);
-          Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &gnu_additions.sparse);
+          Self::parse_old_gnu_sparse_instructions(
+            vh,
+            &mut self.inode_state,
+            &gnu_additions.sparse,
+          )?;
           old_gnu_sparse_is_extended = gnu_additions.parse_is_extended();
         }
 
@@ -722,13 +740,10 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         // Done GNU header parsing.
       },
       unknown_version_magic => {
-        return Err(
-          TarHeaderParserError::UnknownHeaderMagicVersion {
-            magic: unknown_version_magic[..6].try_into().unwrap(),
-            version: unknown_version_magic[6..].try_into().unwrap(),
-          }
-          .into(),
-        );
+        return vh.hfve(TarHeaderParserError::UnknownHeaderMagicVersion {
+          magic: unknown_version_magic[..6].try_into().unwrap(),
+          version: unknown_version_magic[6..].try_into().unwrap(),
+        });
       },
     }
     // We parsed everything from the header block and released the buffer.
@@ -807,7 +822,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         TarParserState::ParsingPaxData(StateParsingPaxData {
           remaining_data: data_after_header,
           padding_after: padding_after_data,
-          pax_mode: PaxConfidence::LOCAL, // We are parsing a local PAX header.
+          _pax_mode: PaxConfidence::LOCAL, // We are parsing a local PAX header.
         })
       },
       TarTypeFlag::PaxGlobalExtendedHeader => {
@@ -815,7 +830,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         TarParserState::ParsingPaxData(StateParsingPaxData {
           remaining_data: data_after_header,
           padding_after: padding_after_data,
-          pax_mode: PaxConfidence::GLOBAL, // We are parsing a local PAX header.
+          _pax_mode: PaxConfidence::GLOBAL, // We are parsing a local PAX header.
         })
       },
       TarTypeFlag::LongNameGnu => {
@@ -918,7 +933,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         // We have some padding after the long name, so we skip it.
         TarParserState::SkippingData(StateSkippingData {
           remaining_data: state.padding_after_data,
-          context: "Padding after long name",
+          _context: "Padding after long name",
         })
       } else {
         // We are done with the long name and there is no padding, so we reset the parser state.
@@ -935,10 +950,11 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     reader: &mut Cursor<&[u8]>,
     state: StateReadingOldGnuSparseExtendedHeader,
   ) -> Result<TarParserState, TarParserError> {
+    let vh = &mut VHW(&mut self.violation_handler);
     // We must read the next block to get more sparse headers.
 
     // TODO: possible bug in the future we should only advance after we have fully parsed the extended header.
-    let extended_header_buffer = match buffer_array(reader, &mut self.header_buffer)? {
+    let extended_header_buffer = match buffer_array(reader, &mut self.header_buffer) {
       Some(buffer) => buffer,
       None => {
         // We don't have a complete buffer yet, so we need to wait for more data.
@@ -948,7 +964,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
 
     let extended_header = GnuHeaderExtSparse::ref_from_bytes(&extended_header_buffer)
       .expect("BUG: Not enough bytes for GnuHeaderExtSparse");
-    Self::parse_old_gnu_sparse_instructions(&mut self.inode_state, &extended_header.sparse);
+    Self::parse_old_gnu_sparse_instructions(vh, &mut self.inode_state, &extended_header.sparse)?;
     Ok(if extended_header.parse_is_extended() {
       // If the extended header is still extended, we need to read the next block.
       TarParserState::ReadingOldGnuSparseExtendedHeader(state)
@@ -982,7 +998,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
         // We have some padding after the PAX data, so we skip it.
         TarParserState::SkippingData(StateSkippingData {
           remaining_data: state.padding_after,
-          context: "Padding after PAX data",
+          _context: "Padding after PAX data",
         })
       } else {
         TarParserState::default()
@@ -998,6 +1014,7 @@ impl<VH: TarViolationHandler> TarParser<VH> {
     reader: &mut Cursor<&[u8]>,
     state: StateParsingGnuSparse1_0,
   ) -> Result<TarParserState, TarParserError> {
+    // TODO: if we optionally keep a backbuffer we could transition to a plain file data state on error
     let vh = &mut VHW(&mut self.violation_handler);
 
     let done =

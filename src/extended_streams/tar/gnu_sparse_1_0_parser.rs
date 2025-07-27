@@ -4,7 +4,7 @@ use crate::{
   extended_streams::tar::{
     align_to_block_size, corrupt_field_to_tar_err, limit_exceeded_to_tar_err, CorruptFieldContext,
     IgnoreTarViolationHandler, LimitExceededContext, SparseFileInstruction, SparseFormat,
-    TarParserError, TarViolationHandler, VHW,
+    TarParserError, TarParserErrorKind, TarViolationHandler, VHW,
   },
   BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
   UnwrapInfallible, WriteAllError,
@@ -105,11 +105,11 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
       ) => {
-        let err = TarParserError::LimitExceeded {
+        let err = TarParserErrorKind::LimitExceeded {
           limit: MAX_VALUE_STRING_LENGTH,
           context: LimitExceededContext::GnuSparse1_0MapDecimalStringTooLong,
         };
-        return Err(vh.hfve(err));
+        return vh.hfve(err);
       },
     }
 
@@ -167,10 +167,10 @@ impl<VH: TarViolationHandler> GnuSparse1_0Parser<VH> {
         } else {
           LimitExceededContext::GnuSparse1_0MapSizeEntryDecimalStringTooLong
         };
-        return Err(vh.hfve(TarParserError::LimitExceeded {
+        return vh.hfve(TarParserErrorKind::LimitExceeded {
           limit: self.value_string_cursor.len(),
           context: limit_exceeded_context,
-        }));
+        });
       },
     }
 

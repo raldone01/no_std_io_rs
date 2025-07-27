@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::extended_streams::tar::TarParserError;
+use crate::extended_streams::tar::{ErrorSeverity, TarParserError, TarParserErrorKind};
 
 pub trait TarViolationHandler {
   /// When a violation occurs, this method is called.
@@ -10,21 +10,21 @@ pub trait TarViolationHandler {
   ///
   /// Note: Some errors are marked as fatal that seem recoverable because the parser implementation avoids creating intermediate buffer just for error recovery.
   #[must_use]
-  fn handle(&mut self, error: &TarParserError, is_fatal: bool) -> bool;
+  fn handle(&mut self, error: &TarParserError) -> bool;
 }
 
 #[derive(Debug, Default)]
 pub struct StrictTarViolationHandler;
 
 impl TarViolationHandler for StrictTarViolationHandler {
-  fn handle(&mut self, _error: &TarParserError, _is_fatal: bool) -> bool {
+  fn handle(&mut self, _error: &TarParserError) -> bool {
     false
   }
 }
 
 #[derive(Debug, Default)]
 pub struct AuditTarViolationHandler {
-  pub violations: Vec<(TarParserError, bool)>,
+  pub violations: Vec<TarParserError>,
 }
 
 impl AuditTarViolationHandler {
@@ -37,8 +37,8 @@ impl AuditTarViolationHandler {
 }
 
 impl TarViolationHandler for AuditTarViolationHandler {
-  fn handle(&mut self, error: &TarParserError, fatal_error: bool) -> bool {
-    self.violations.push((error.clone(), fatal_error));
+  fn handle(&mut self, error: &TarParserError) -> bool {
+    self.violations.push(error.clone());
     true
   }
 }
@@ -47,7 +47,7 @@ impl TarViolationHandler for AuditTarViolationHandler {
 pub struct IgnoreTarViolationHandler;
 
 impl TarViolationHandler for IgnoreTarViolationHandler {
-  fn handle(&mut self, _error: &TarParserError, _fatal_error: bool) -> bool {
+  fn handle(&mut self, _error: &TarParserError) -> bool {
     true
   }
 }
@@ -57,15 +57,15 @@ pub(crate) struct VHW<'a, VH: TarViolationHandler>(pub(crate) &'a mut VH);
 
 impl<VH: TarViolationHandler> VHW<'_, VH> {
   /// Handles a potential violation in result form by calling the violation handler.
-  pub(crate) fn hpvr<T, E: Into<TarParserError>>(
+  pub(crate) fn hpvr<T, E: Into<TarParserErrorKind>>(
     &mut self,
     operation_result: Result<T, E>,
   ) -> Result<Option<T>, TarParserError> {
     match operation_result {
       Ok(v) => Ok(Some(v)),
       Err(e) => {
-        let e = e.into();
-        if self.0.handle(&e, false) {
+        let e = TarParserError::new(e.into(), ErrorSeverity::Recoverable);
+        if self.0.handle(&e) {
           Ok(None)
         } else {
           Err(e)
@@ -75,9 +75,12 @@ impl<VH: TarViolationHandler> VHW<'_, VH> {
   }
 
   /// Handles a potential violation in error form by calling the violation handler.
-  pub(crate) fn hpve<E: Into<TarParserError>>(&mut self, error: E) -> Result<(), TarParserError> {
-    let e = error.into();
-    if self.0.handle(&e, false) {
+  pub(crate) fn hpve<E: Into<TarParserErrorKind>>(
+    &mut self,
+    error: E,
+  ) -> Result<(), TarParserError> {
+    let e = TarParserError::new(error.into(), ErrorSeverity::Recoverable);
+    if self.0.handle(&e) {
       Ok(())
     } else {
       Err(e)
@@ -85,24 +88,27 @@ impl<VH: TarViolationHandler> VHW<'_, VH> {
   }
 
   /// Handles a fatal violation in result form by calling the violation handler.
-  pub(crate) fn hfvr<T, E: Into<TarParserError>>(
+  pub(crate) fn hfvr<T, E: Into<TarParserErrorKind>>(
     &mut self,
     operation_result: Result<T, E>,
   ) -> Result<T, TarParserError> {
     match operation_result {
       Ok(v) => Ok(v),
       Err(e) => {
-        let e = e.into();
-        let _fatal_error = self.0.handle(&e, true);
+        let e = TarParserError::new(e.into(), ErrorSeverity::Recoverable);
+        let _fatal_error = self.0.handle(&e);
         Err(e)
       },
     }
   }
 
   /// Handles a fatal violation in error form by calling the violation handler.
-  pub(crate) fn hfve<E: Into<TarParserError>>(&mut self, error: E) -> TarParserError {
-    let e = error.into();
-    let _fatal_error = self.0.handle(&e, true);
-    e
+  pub(crate) fn hfve<T, E: Into<TarParserErrorKind>>(
+    &mut self,
+    error: E,
+  ) -> Result<T, TarParserError> {
+    let e = TarParserError::new(error.into(), ErrorSeverity::Recoverable);
+    let _fatal_error = self.0.handle(&e);
+    Err(e)
   }
 }

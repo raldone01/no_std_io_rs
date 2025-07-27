@@ -207,8 +207,43 @@ impl ::core::convert::From<hashbrown::TryReserveError> for GeneralTryReserveErro
   }
 }
 
+// Equivalent to a bool but allows searching for errors more easily.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorSeverity {
+  Fatal,
+  Recoverable,
+}
+
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum TarParserError {
+pub struct TarParserError {
+  pub kind: TarParserErrorKind,
+  pub severity: ErrorSeverity,
+}
+
+impl TarParserError {
+  pub(crate) fn new<EK: Into<TarParserErrorKind>>(kind: EK, severity: ErrorSeverity) -> Self {
+    Self {
+      kind: kind.into(),
+      severity,
+    }
+  }
+
+  pub fn is_fatal(&self) -> bool {
+    self.severity == ErrorSeverity::Fatal
+  }
+}
+
+impl Display for TarParserError {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    match self.severity {
+      ErrorSeverity::Fatal => write!(f, "Fatal Tar parser error: {}", self.kind),
+      ErrorSeverity::Recoverable => write!(f, "Recoverable Tar parser error: {}", self.kind),
+    }
+  }
+}
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum TarParserErrorKind {
   #[error("Tar header parser error: {0}")]
   HeaderParserError(#[from] TarHeaderParserError),
   #[error("PAX parser error: {0}")]
@@ -233,14 +268,13 @@ pub enum TarParserError {
 #[must_use]
 pub(crate) fn corrupt_field_to_tar_err<'a, T: Into<GeneralParseError>>(
   field: CorruptFieldContext,
-) -> impl FnOnce(T) -> TarParserError + 'a {
+) -> impl FnOnce(T) -> TarParserErrorKind + 'a {
   move |error| {
-    let err = TarParserError::CorruptField {
+    let error_kind = TarParserErrorKind::CorruptField {
       field,
       error: error.into(),
-    }
-    .into();
-    err
+    };
+    error_kind
   }
 }
 
@@ -248,17 +282,20 @@ pub(crate) fn corrupt_field_to_tar_err<'a, T: Into<GeneralParseError>>(
 pub(crate) fn limit_exceeded_to_tar_err<'a, TryReserveError>(
   limit: usize,
   context: LimitExceededContext,
-) -> impl FnOnce(LimitedBackingBufferError<TryReserveError>) -> TarParserError + 'a
+) -> impl FnOnce(LimitedBackingBufferError<TryReserveError>) -> TarParserErrorKind + 'a
 where
   GeneralTryReserveError: From<TryReserveError>,
 {
-  move |error| match error {
-    LimitedBackingBufferError::MemoryLimitExceeded(_bytes_size) => {
-      TarParserError::LimitExceeded { limit, context }
-    },
-    LimitedBackingBufferError::ResizeError(alloc_error) => TarParserError::TryReserveError {
-      try_reserve_error: alloc_error.into(),
-      context,
-    },
+  move |error| {
+    let error_kind = match error {
+      LimitedBackingBufferError::MemoryLimitExceeded(_bytes_size) => {
+        TarParserErrorKind::LimitExceeded { limit, context }
+      },
+      LimitedBackingBufferError::ResizeError(alloc_error) => TarParserErrorKind::TryReserveError {
+        try_reserve_error: alloc_error.into(),
+        context,
+      },
+    };
+    error_kind
   }
 }

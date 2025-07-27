@@ -19,8 +19,8 @@ use crate::{
       ATIME, CTIME, GID, GNAME, LINKPATH, MTIME, PATH, SIZE, UID, UNAME,
     },
     CorruptFieldContext, IgnoreTarViolationHandler, InodeBuilder, InodeConfidentValue,
-    LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError, TarViolationHandler,
-    TimeStamp, VHW,
+    LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError, TarParserErrorKind,
+    TarViolationHandler, TimeStamp, VHW,
   },
   BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedHashMap,
   LimitedVec, UnwrapInfallible, WriteAllError,
@@ -342,7 +342,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
     self.sparse_instruction_builder = Default::default();
   }
 
-  fn try_finish_sparse_instruction(&mut self) -> Result<(), TarParserError> {
+  fn try_finish_sparse_instruction(&mut self, vh: &mut VHW<'_, VH>) -> Result<(), TarParserError> {
     if let (Some(offset_before), Some(data_size)) = (
       self.sparse_instruction_builder.offset_before,
       self.sparse_instruction_builder.data_size,
@@ -352,13 +352,12 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         data_size,
       };
 
-      self
-        .gnu_sparse_map_local
-        .push(sparse_instruction)
-        .map_err(limit_exceeded_to_tar_err(
+      vh.hfvr(self.gnu_sparse_map_local.push(sparse_instruction).map_err(
+        limit_exceeded_to_tar_err(
           self.gnu_sparse_map_local.max_len(),
           LimitExceededContext::TooManySparseFileInstructions,
-        ))?;
+        ),
+      ))?;
 
       self.sparse_instruction_builder = Default::default();
     }
@@ -408,7 +407,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
       }
     }
     if offset.is_some() {
-      return Err(TarParserError::PaxParserError(
+      return vh.hfve(TarParserErrorKind::PaxParserError(
         PaxParserError::GnuSparseMapMalformed(len_parts),
       ));
     }
@@ -541,7 +540,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           {
             self.sparse_instruction_builder.offset_before = Some(parsed_value);
           }
-          vh.hpvr(self.try_finish_sparse_instruction())?;
+          self.try_finish_sparse_instruction(vh)?;
         } else {
           vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
             key: GNU_SPARSE_DATA_BLOCK_OFFSET_0_0,
@@ -565,7 +564,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
           {
             self.sparse_instruction_builder.data_size = Some(parsed_value);
           }
-          vh.hpvr(self.try_finish_sparse_instruction())?;
+          self.try_finish_sparse_instruction(vh)?;
         } else {
           vh.hpve(PaxParserError::WellKnownKeyAppearedInWrongPaxContext {
             key: GNU_SPARSE_DATA_BLOCK_SIZE_0_0,
@@ -699,7 +698,7 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(FixedSizeBufferError { .. })),
       ) => {
-        return Err(TarParserError::LimitExceeded {
+        return vh.hfve(TarParserErrorKind::LimitExceeded {
           limit: MAX_KV_LENGTH_FIELD_LENGTH,
           context: LimitExceededContext::PaxLengthFieldDecimalStringTooLong,
         });
@@ -751,10 +750,10 @@ impl<VH: TarViolationHandler> PaxParser<VH> {
         CopyUntilError::IoWrite(WriteAllError::ZeroWrite { .. })
         | CopyUntilError::IoWrite(WriteAllError::Io(..)),
       ) => {
-        return Err(vh.hfve(TarParserError::LimitExceeded {
+        return vh.hfve(TarParserErrorKind::LimitExceeded {
           limit: self.pax_key_value_buffer.max_len(),
           context: LimitExceededContext::PaxKvKeyTooLong,
-        }));
+        });
       },
     }
 
@@ -872,7 +871,7 @@ mod tests {
 
   use alloc::vec;
 
-  use crate::extended_streams::tar::{GeneralParseError, StrictTarViolationHandler};
+  use crate::extended_streams::tar::{ErrorSeverity, GeneralParseError, StrictTarViolationHandler};
 
   use super::*;
 
@@ -1040,9 +1039,12 @@ mod tests {
     let data = b"abc path=foo\n";
     assert!(matches!(
       drive_parser(&mut parser, data, false),
-      Err(TarParserError::CorruptField {
-        field: CorruptFieldContext::PaxKvLength,
-        error: GeneralParseError::InvalidInteger(ParseIntError { .. }),
+      Err(TarParserError {
+        kind: TarParserErrorKind::CorruptField {
+          field: CorruptFieldContext::PaxKvLength,
+          error: GeneralParseError::InvalidInteger(ParseIntError { .. }),
+        },
+        severity: ErrorSeverity::Recoverable
       })
     ));
   }
@@ -1053,9 +1055,10 @@ mod tests {
     let data = b"12 path=foo ";
     assert_eq!(
       drive_parser(&mut parser, data, false),
-      Err(TarParserError::PaxParserError(
-        PaxParserError::KeyValuePairMissingNewline
-      ))
+      Err(TarParserError {
+        kind: TarParserErrorKind::PaxParserError(PaxParserError::KeyValuePairMissingNewline),
+        severity: ErrorSeverity::Recoverable
+      })
     );
   }
 }
