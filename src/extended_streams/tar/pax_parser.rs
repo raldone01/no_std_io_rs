@@ -22,8 +22,9 @@ use crate::{
     LimitExceededContext, SparseFileInstruction, SparseFormat, TarParserError, TarParserErrorKind,
     TarViolationHandler, TimeStamp, VHW,
   },
-  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedHashMap,
-  LimitedVec, UnwrapInfallible, WriteAllError,
+  limited_collections::{LimitedHashMap, LimitedVec},
+  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, UnwrapInfallible,
+  WriteAllError,
 };
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

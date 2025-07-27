@@ -4,7 +4,7 @@ use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
 
 use thiserror::Error;
 
-use crate::{LimitedBackingBufferError, LimitedVec, LimitedWriter};
+use crate::{limited_collections::LimitedVec, LimitedBackingBufferError, LimitedWriter};
 
 /// Trait for writing bytes.
 pub trait Write {

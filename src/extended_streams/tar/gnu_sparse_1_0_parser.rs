@@ -6,8 +6,9 @@ use crate::{
     IgnoreTarViolationHandler, LimitExceededContext, SparseFileInstruction, SparseFormat,
     TarParserError, TarParserErrorKind, TarViolationHandler, VHW,
   },
-  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, LimitedVec,
-  UnwrapInfallible, WriteAllError,
+  limited_collections::LimitedVec,
+  BufferedRead, CopyBuffered as _, CopyUntilError, Cursor, FixedSizeBufferError, UnwrapInfallible,
+  WriteAllError,
 };
 
 pub(crate) const fn max_string_length_from_limit(limit: usize, radix: usize) -> usize {

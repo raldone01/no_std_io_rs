@@ -27,8 +27,11 @@ use crate::{
     TarHeaderParserError, TarInode, TarParserError, TarParserErrorKind, TarParserLimits,
     TarParserOptions, TarViolationHandler, TimeStamp, VHW,
   },
-  BufferedRead as _, LimitedVec, UnwrapInfallible, Write, WriteAll as _,
+  limited_collections::LimitedVec,
+  BufferedRead as _, UnwrapInfallible, Write, WriteAll as _,
 };
+
+// TODO: when moving between states check that the underlying parser was completed correctly.
 
 pub(crate) fn align_to_block_size(size: usize) -> usize {
   (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1)

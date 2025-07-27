@@ -1,8 +1,6 @@
 mod backing_buffer;
 mod buffered_read;
 mod copy;
-mod limited_hash_map;
-mod limited_vec;
 mod read;
 mod read_all;
 mod seek;
@@ -13,8 +11,6 @@ mod write_all;
 pub use backing_buffer::*;
 pub use buffered_read::*;
 pub use copy::*;
-pub use limited_hash_map::*;
-pub use limited_vec::*;
 pub use read::*;
 pub use read_all::*;
 pub use seek::*;
